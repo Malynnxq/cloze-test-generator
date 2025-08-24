@@ -1,0 +1,202 @@
+<!DOCTYPE html>
+<html lang="de">
+
+<head>
+    <meta charset="UTF-8">
+    <title>Cloze-Test (Minimal)</title>
+    <style>
+        body {
+            font-family: system-ui, sans-serif;
+            margin: 2rem;
+            line-height: 1.6;
+        }
+
+        textarea {
+            width: 100%;
+            min-height: 140px;
+        }
+
+        input[type=number] {
+            width: 80px;
+        }
+
+        .word {
+            display: inline-block;
+            margin: 0 4px;
+        }
+
+        .blank {
+            width: 120px;
+            padding: 2px 4px;
+        }
+
+        .correct {
+            background: palegreen;
+        }
+
+        .incorrect {
+            background: lightcoral;
+        }
+
+        #controls {
+            margin: 1rem 0;
+        }
+    </style>
+</head>
+
+<body>
+    <h1>Cloze-Test (перший крок)</h1>
+
+    <!-- 1) Ввід тексту -->
+    <label for="text">Встав свій текст:</label><br>
+    <textarea id="text" placeholder="Наприклад: Heute lernen wir Reihen. Die berühmte Formel lautet E=mc^2."></textarea>
+
+    <!-- 2) Налаштування + кнопки -->
+    <div id="controls">
+        <label for="percent">Складність (% пропусків):</label>
+        <input id="percent" type="number" value="20" min="0" max="100" step="5">
+        <button id="btnGen">Створити пропуски</button>
+        <button id="btnCheck">Перевірити</button>
+    </div>
+
+    <!-- 3) Вивід тесту з пропусками -->
+    <div id="output"></div>
+
+    <!-- 4) Результат перевірки -->
+    <p id="result"></p>
+
+    <script>
+        // ===== СТАН (те, що зберігаємо між натисканнями) ======================
+        let hidden = {};   // id -> правильне слово
+        let counter = 0;   // лічильник пропусків
+
+        // Допоміжне: розпізнати та зберегти розділовий знак у кінці слова
+        const endPunctRE = /[.,!?;:()"'»«\]\[]$/;
+
+        // Простий поділ на "токени" (слова/фрагменти) за пробілами
+        function tokenize(text) {
+            return text.trim().split(/\s+/).filter(Boolean);
+        }
+
+        // Випадкова вибірка індексів без повторів
+        function chooseRandomIndices(poolSize, howMany) {
+            const pool = Array.from({ length: poolSize }, (_, i) => i);
+            const chosen = new Set();
+            while (chosen.size < Math.min(howMany, pool.length)) {
+                const k = Math.random() * pool.length | 0;
+                chosen.add(pool.splice(k, 1)[0]);
+            }
+            return chosen;
+        }
+
+        // Вирізає обрамлення й пунктуацію з обох боків слова, але повертає їх окремо
+        function splitWord(token) {
+            const str = String(token ?? "");
+
+            // 1) Початкове «обрамлення»: лапки, зірочки, дужки, тощо
+            const leadMatch = str.match(/^(["'`*_«»(){}\[\]<>]+)+/u);
+            const lead = leadMatch ? leadMatch[0] : "";
+
+            // 2) Кінцеві символи: спершу «важкі» обрамлення, потім звичайна пунктуація.
+            //    Дозволяємо кілька символів підряд, наприклад: **слово**,"  або  слово!?
+            const trailMatch = str.match(/(["'`*_«»(){}\[\]<>]+|[.,!?;:%]+)+$/u);
+            const trail = trailMatch ? trailMatch[0] : "";
+
+            // 3) Серцевина (core) — те, що між lead і trail
+            const core = str.slice(lead.length, str.length - trail.length);
+
+            return { lead, core, trail };
+        }
+
+
+        // Головне: згенерувати пропуски
+        function generateCloze() {
+            const raw = document.getElementById('text').value;
+            const percent = +document.getElementById('percent').value || 0;
+            const out = document.getElementById('output');
+            const res = document.getElementById('result');
+
+            // скидаємо попередній стан/вивід
+            out.innerHTML = '';
+            res.textContent = '';
+            hidden = {};
+            counter = 0;
+
+            if (!raw.trim()) return;
+
+            const tokens = tokenize(raw);
+            const howMany = Math.max(1, Math.round(tokens.length * percent / 100));
+            const chosen = chooseRandomIndices(tokens.length, howMany);
+
+            tokens.forEach((tok, i) => {
+                // Відокремимо кінець-пунктуацію, щоб не плутати користувача
+                let punct = '';
+                if (endPunctRE.test(tok)) {
+                    punct = tok.slice(-1);     // останній символ
+                    tok = tok.slice(0, -1);    // саме слово без розділового
+                }
+
+                const span = document.createElement('span');
+                span.className = 'word';
+
+                if (chosen.has(i) && tok.length > 0) {
+                    // Створюємо пропуск
+                    counter++;
+                    hidden[counter] = tok;     // запам'ятали правильне слово
+
+                    const inp = document.createElement('input');
+                    inp.className = 'blank';
+                    inp.dataset.index = String(counter);
+                    inp.setAttribute('aria-label', 'Пропуск ' + counter);
+
+                    span.appendChild(inp);
+                    if (punct) span.appendChild(document.createTextNode(punct));
+                } else {
+                    // Звичайне слово (без пропуску)
+                    span.textContent = tok + (punct || '');
+                }
+
+                out.appendChild(span);
+                out.appendChild(document.createTextNode(' ')); // пробіл між словами
+            });
+        }
+
+        // Перевірка відповідей
+        function checkAnswers() {
+            const inputs = document.querySelectorAll('input.blank');
+            let ok = 0, total = inputs.length;
+
+            inputs.forEach(inp => {
+                const id = +inp.dataset.index;
+                const val = (inp.value || '').trim();
+                if (val === hidden[id]) {
+                    inp.classList.add('correct');
+                    inp.classList.remove('incorrect');
+                    ok++;
+                } else {
+                    inp.classList.add('incorrect');
+                    inp.classList.remove('correct');
+                }
+            });
+
+            document.getElementById('result').textContent = `Правильно: ${ok}/${total}`;
+        }
+
+        // Події на кнопках
+        document.getElementById('btnGen').addEventListener('click', generateCloze);
+        document.getElementById('btnCheck').addEventListener('click', checkAnswers);
+
+        // Клавіатурні скорочення: Enter = перевірити, Ctrl+G = згенерувати
+        document.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault();
+                checkAnswers();
+            } else if ((e.key === 'g' || e.key === 'G') && (e.ctrlKey || e.metaKey)) {
+                e.preventDefault();
+                generateCloze();
+            }
+        });
+    </script>
+</body>
+
+</html>
