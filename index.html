@@ -82,7 +82,7 @@
         function chooseRandomIndices(poolSize, howMany) {
             const pool = Array.from({ length: poolSize }, (_, i) => i);
             const chosen = new Set();
-            while (chosen.size < Math.min(howMany, pool.length)) {
+            while (chosen.size < howMany) {
                 const k = Math.random() * pool.length | 0;
                 chosen.add(pool.splice(k, 1)[0]);
             }
@@ -129,31 +129,32 @@
             const chosen = chooseRandomIndices(tokens.length, howMany);
 
             tokens.forEach((tok, i) => {
-                // Відокремимо кінець-пунктуацію, щоб не плутати користувача
-                let punct = '';
-                if (endPunctRE.test(tok)) {
-                    punct = tok.slice(-1);     // останній символ
-                    tok = tok.slice(0, -1);    // саме слово без розділового
-                }
+                // Нове розбиття слова на lead/core/trail для випадків зі знаками пунктуації на кінці ТА початку як от: «слово», **слово**
+                const { lead, core, trail } = splitWord(tok);
 
                 const span = document.createElement('span');
                 span.className = 'word';
 
-                if (chosen.has(i) && tok.length > 0) {
-                    // Створюємо пропуск
+                if (chosen.has(i) && core.length > 0) {
+                    // Робимо пропуск тільки для "core"
                     counter++;
-                    hidden[counter] = tok;     // запам'ятали правильне слово
+                    hidden[counter] = core;     // зберігаємо правильну відповідь без зайвих символів
 
+                    // Початкові символи лишаємо як текст
+                    if (lead) span.appendChild(document.createTextNode(lead));
+
+                    // Сам пропуск
                     const inp = document.createElement('input');
                     inp.className = 'blank';
                     inp.dataset.index = String(counter);
                     inp.setAttribute('aria-label', 'Пропуск ' + counter);
-
                     span.appendChild(inp);
-                    if (punct) span.appendChild(document.createTextNode(punct));
+
+                    // Кінцеві символи лишаємо як текст
+                    if (trail) span.appendChild(document.createTextNode(trail));
                 } else {
                     // Звичайне слово (без пропуску)
-                    span.textContent = tok + (punct || '');
+                    span.textContent = tok;
                 }
 
                 out.appendChild(span);
