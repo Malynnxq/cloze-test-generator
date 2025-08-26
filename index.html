@@ -30,6 +30,13 @@
             padding: 2px 4px;
         }
 
+        /* додано: окремий клас для інпутів під формули */
+        .math-blank {
+            width: 120px;
+            padding: 2px 4px;
+            margin: 2px 0;
+        }
+
         .correct {
             background: palegreen;
         }
@@ -40,6 +47,11 @@
 
         #controls {
             margin: 1rem 0;
+        }
+
+        /* формульні спани, щоб не ламати переноси */
+        .formula {
+            white-space: nowrap;
         }
 
         /* --- Зображення + маски --- */
@@ -107,6 +119,18 @@
             display: none;
         }
     </style>
+
+    <!-- MathJax 3 (TeX → SVG) — додано -->
+    <script>
+        window.MathJax = {
+            tex: {
+                inlineMath: [['$', '$'], ['\\(', '\\)']],
+                displayMath: [['$$', '$$'], ['\\[', '\\]']]
+            },
+            svg: { fontCache: 'global' }
+        };
+    </script>
+    <script defer src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-svg.js"></script>
 </head>
 
 <body>
@@ -129,7 +153,7 @@
 
     <!-- 1) Ввід тексту -->
     <label for="text">Встав свій текст:</label><br>
-    <textarea id="text" placeholder="Наприклад: Heute lernen wir Reihen. Die berühmte Formel lautet E=mc^2."></textarea>
+    <textarea id="text" placeholder="Наприклад: Heute lernen wir Reihen. Die berühmte Formel lautet $E=mc^2$."></textarea>
 
     <!-- 2) Налаштування + кнопки -->
     <div id="controls">
@@ -137,17 +161,26 @@
         <input id="percent" type="number" value="20" min="0" max="100" step="5">
         <button id="btnGen">Створити пропуски</button>
         <button id="btnCheck">Перевірити</button>
+        <!-- додано: математика -->
+        <div style="margin-top:.5rem">
+            <label><input type="checkbox" id="processMath"> Перевіряти математичну нотацію</label>
+            <label style="margin-left:1rem"><input type="checkbox" id="noHideMathCommands"> Не ховати команди в математиці</label>
+        </div>
     </div>
 
     <!-- 3) Вивід тесту з пропусками -->
     <div id="output"></div>
+
+    <!-- 3.1) Додано: інпут-список для формул -->
+    <h3 id="mathHeader" style="display:none;">Математичні відповіді</h3>
+    <div id="mathInputs"></div>
 
     <!-- 4) Результат перевірки -->
     <p id="result"></p>
 
     <script>
         // ===== СТАН (те, що зберігаємо між натисканнями) ======================
-        let hidden = {};   // id -> правильне слово
+        let hidden = {};   // id -> правильне слово/лексема
         let counter = 0;   // лічильник пропусків
 
         // ==== ЗОБРАЖЕННЯ: стан та утиліти ====
@@ -266,11 +299,57 @@
             return text.trim().split(/\s+/).filter(Boolean);
         }
 
+        // ==== МАТЕМАТИКА: допоміжні (додано) ====
+        const isFormula = t => typeof t === 'string' && t.startsWith('$');
+        function splitIntoTextAndFormula(str) {
+            const re = /(\$\$[^$]*?\$\$|\$[^$]*?\$)/g; // виділяємо $...$ і $$...$$
+            const out = [];
+            let last = 0, m;
+            while ((m = re.exec(str)) !== null) {
+                if (m.index > last) {
+                    out.push(...str.slice(last, m.index).split(/\s+/).filter(Boolean));
+                }
+                out.push(m[0]); // сама формула
+                last = re.lastIndex;
+            }
+            if (last < str.length) {
+                out.push(...str.slice(last).split(/\s+/).filter(Boolean));
+            }
+            return out;
+        }
+
+        /* команди, які не чіпаємо (додано) */
+        const RESERVED = new Set([
+            '\\frac', '\\sqrt', '\\sum', '\\int', '\\log', '\\sin', '\\cos', '\\tan',
+            '\\left', '\\right', '\\big', '\\Big', '\\bigl', '\\bigr', '\\Bigl', '\\Bigr',
+            '\\begin', '\\end', '\\bmatrix', '\\pmatrix', '\\vmatrix', '\\cases',
+            '\\text', '\\mathbb', '\\mathrm', '\\operatorname', '\\vec',
+            '&', '\\\\'
+        ]);
+
+        // Плейсхолдер для формул (додано)
+        function makePlaceholder(idx, original, prevLex) {
+            const src = String(original || '');
+            const isCmd = /^\\[A-Za-z]+$/.test(src);
+            let phantomArg = isCmd ? 'MMM' : src;
+            if (!/^[A-Za-z0-9]+$/.test(phantomArg)) phantomArg = 'M';
+
+            const ACCENTS = new Set(['\\vec', '\\hat', '\\bar', '\\tilde', '\\overline', '\\overrightarrow', '\\overleftarrow', '\\widehat', '\\widetilde']);
+            const isAccent = ACCENTS.has(String(prevLex || ''));
+
+            if (isAccent) {
+                const inner = `\\textcolor{red}{(${idx})\\,\\underline{\\hphantom{${phantomArg}}}}\\vphantom{M}`;
+                return `{${inner}}`;
+            }
+            const inner = `\\textcolor{red}{(${idx})\\;\\underline{\\hphantom{${phantomArg}}}}`;
+            return `{${inner}}`;
+        }
+
         // Випадкова вибірка індексів без повторів
         function chooseRandomIndices(poolSize, howMany) {
             const pool = Array.from({ length: poolSize }, (_, i) => i);
             const chosen = new Set();
-            while (chosen.size < howMany) {
+            while (chosen.size < howMany && pool.length) {
                 const k = Math.random() * pool.length | 0;
                 chosen.add(pool.splice(k, 1)[0]);
             }
@@ -280,19 +359,11 @@
         // Вирізає обрамлення й пунктуацію з обох боків слова, але повертає їх окремо
         function splitWord(token) {
             const str = String(token ?? "");
-
-            // 1) Початкове «обрамлення»: лапки, зірочки, дужки, тощо
             const leadMatch = str.match(/^(["'`*_«»(){}\[\]<>]+)+/u);
             const lead = leadMatch ? leadMatch[0] : "";
-
-            // 2) Кінцеві символи: спершу «важкі» обрамлення, потім звичайна пунктуація.
-            //    Дозволяємо кілька символів підряд, наприклад: **слово**,"  або  слово!?
             const trailMatch = str.match(/(["'`*_«»(){}\[\]<>]+|[.,!?:%]+)+$/u);
             const trail = trailMatch ? trailMatch[0] : "";
-
-            // 3) Серцевина (core) — те, що між lead і trail
             const core = str.slice(lead.length, str.length - trail.length);
-
             return { lead, core, trail };
         }
 
@@ -302,52 +373,148 @@
             const percent = +document.getElementById('percent').value || 0;
             const out = document.getElementById('output');
             const res = document.getElementById('result');
+            const mBox = document.getElementById('mathInputs');
+            const mHead = document.getElementById('mathHeader');
+            const mathOn = !!document.getElementById('processMath')?.checked;
+            const noHideCmds = !!document.getElementById('noHideMathCommands')?.checked;
 
             // скидаємо попередній стан/вивід
             out.innerHTML = '';
             res.textContent = '';
+            mBox.innerHTML = '';
+            mHead.style.display = 'none';
             hidden = {};
             counter = 0;
 
             if (!raw.trim()) return;
 
-            const tokens = tokenize(raw);
-            const howMany = Math.max(1, Math.round(tokens.length * percent / 100));
-            const chosen = chooseRandomIndices(tokens.length, howMany);
+            // НОВЕ: розбиваємо з урахуванням $...$/$$...$$
+            const tokens = splitIntoTextAndFormula(raw);
+
+            // Для текстових пропусків — беремо лише НЕ-формульні токени
+            const textIdx = [];
+            for (let i = 0; i < tokens.length; i++) {
+                if (!isFormula(tokens[i])) textIdx.push(i);
+            }
+            const howManyText = Math.max(1, Math.round(textIdx.length * percent / 100));
+            // випадково обираємо абсолютні індекси з textIdx
+            const pool = textIdx.slice();
+            const chosenAbs = new Set();
+            while (chosenAbs.size < howManyText && pool.length) {
+                const k = Math.random() * pool.length | 0;
+                chosenAbs.add(pool.splice(k, 1)[0]);
+            }
 
             tokens.forEach((tok, i) => {
-                // Нове розбиття слова на lead/core/trail для випадків зі знаками пунктуації на кінці ТА початку
-                const { lead, core, trail } = splitWord(tok);
+                const tStr = String(tok ?? '');
 
+                // === FORMULA ===
+                if (isFormula(tStr)) {
+                    const span = document.createElement('span');
+                    span.className = 'word formula';
+
+                    if (!mathOn) {
+                        // лишаємо як є
+                        span.textContent = tStr;
+                        out.appendChild(span);
+                        out.appendChild(document.createTextNode(' '));
+                        return;
+                    }
+
+                    const delim = tStr.startsWith('$$') ? '$$' : '$';
+                    const core = tStr.slice(delim.length, -delim.length);
+
+                    // Розбір у лексеми
+                    const lex = core.match(
+                        /(\\\\|\\[a-zA-Z]+|\\\{|\\\}|[a-zA-Z]+|\d+|[=+\-*/^_:&]|[{}\[\]()]|\\,|\\;|\\!|,|\.|\\%|!|')/g
+                    ) || [core];
+
+                    // Що можна ховати
+                    const hideable = [];
+                    for (let k = 0; k < lex.length; k++) {
+                        const lx = lex[k];
+                        const isCmd = /^\\[a-zA-Z]+$/.test(lx);
+                        const ok = (
+                            (isCmd && !RESERVED.has(lx) && lx.length <= 16 && !noHideCmds) ||
+                            (!isCmd && /^[a-zA-Z]$/.test(lx)) ||
+                            (!isCmd && /^\d+$/.test(lx))
+                        );
+                        if (ok) hideable.push(k);
+                    }
+
+                    const maxFormBlanks = Math.round(hideable.length * percent / 100);
+                    const chosenK = new Set();
+                    while (chosenK.size < maxFormBlanks && hideable.length) {
+                        chosenK.add(hideable.splice(Math.random() * hideable.length | 0, 1)[0]);
+                    }
+
+                    // Збирання назад із плейсхолдерами
+                    const rebuilt = [];
+                    for (let k = 0; k < lex.length; k++) {
+                        const lx = lex[k];
+                        if (chosenK.has(k)) {
+                            ++counter; hidden[counter] = lx;
+                            const prev = lex[k - 1] || '';
+                            rebuilt.push(makePlaceholder(counter, lx, prev));
+
+                            // додати відповідний інпут під формулами
+                            const lab = document.createElement('label');
+                            lab.innerHTML = `(${counter}) <input class="blank math-blank" data-index="${counter}">`;
+                            mBox.appendChild(lab);
+                            mHead.style.display = 'block';
+                        } else {
+                            rebuilt.push(lx);
+                        }
+                    }
+
+                    // Додати пробіл між \cmd і наступною літерою, щоб не було "злипань"
+                    let formulaStr = '';
+                    for (let k = 0; k < rebuilt.length; k++) {
+                        const part = rebuilt[k];
+                        if (k > 0) {
+                            const prev = rebuilt[k - 1];
+                            const needSpace = /^\\[a-zA-Z]+$/.test(prev) && /^[A-Za-z]/.test(part) && !String(part).startsWith('\\');
+                            if (needSpace) formulaStr += ' ';
+                        }
+                        formulaStr += part;
+                    }
+
+                    span.textContent = delim + formulaStr + delim;
+                    out.appendChild(span);
+                    out.appendChild(document.createTextNode(' '));
+                    return;
+                }
+
+                // === ЗВИЧАЙНЕ СЛОВО (НЕ формула) ===
+                const { lead, core, trail } = splitWord(tStr);
                 const span = document.createElement('span');
                 span.className = 'word';
 
-                if (chosen.has(i) && core.length > 0) {
-                    // Робимо пропуск тільки для "core"
+                if (chosenAbs.has(i) && core.length > 0) {
                     counter++;
-                    hidden[counter] = core;     // зберігаємо правильну відповідь без зайвих символів
+                    hidden[counter] = core;
 
-                    // Початкові символи лишаємо як текст
                     if (lead) span.appendChild(document.createTextNode(lead));
-
-                    // Сам пропуск
                     const inp = document.createElement('input');
                     inp.className = 'blank';
                     inp.dataset.index = String(counter);
                     inp.setAttribute('aria-label', 'Пропуск ' + counter);
                     span.appendChild(inp);
-
-                    // Кінцеві символи лишаємо як текст
                     if (trail) span.appendChild(document.createTextNode(trail));
                 } else {
-                    // Звичайне слово (без пропуску)
-                    span.textContent = tok;
+                    span.textContent = tStr;
                 }
 
                 out.appendChild(span);
-                out.appendChild(document.createTextNode(' ')); // пробіл між словами
+                out.appendChild(document.createTextNode(' ')); // пробіл між токенами
             });
-            // Після генерації текстових пропусків — згенерувати "дірки" на зображеннях (якщо ввімкнено)
+
+            // Рендер формул після модифікації
+            if (window.MathJax && MathJax.typesetPromise) {
+                MathJax.typesetPromise([out]);
+            }
+
+            // Після генерації текстових/математичних пропусків — згенерувати "дірки" на зображеннях (якщо ввімкнено)
             autoOccludeAll();
         }
 
