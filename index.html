@@ -41,11 +41,89 @@
         #controls {
             margin: 1rem 0;
         }
+
+        /* --- Зображення + маски --- */
+        .row {
+            display: flex;
+            flex-wrap: wrap;
+            gap: .75rem;
+            align-items: center;
+            margin: 1rem 0
+        }
+
+        #figures {
+            display: grid;
+            gap: 1rem;
+            grid-template-columns: repeat(auto-fill, minmax(280px, 1fr))
+        }
+
+        .figure {
+            border: 1px solid #e4e4e4;
+            border-radius: .5rem;
+            padding: .5rem
+        }
+
+        .fig-head {
+            font-weight: 600;
+            margin-bottom: .35rem
+        }
+
+        .img-box {
+            position: relative;
+            overflow: hidden;
+            background: #fafafa
+        }
+
+        .img-box img {
+            display: block;
+            max-width: 100%;
+            height: auto
+        }
+
+        /* Прямокутні "дірки" (маски) */
+        .mask {
+            position: absolute;
+            border: 2px dashed #777;
+            background: rgba(0, 0, 0, .2)
+        }
+
+        .mask .label {
+            position: absolute;
+            top: -1.2em;
+            left: 0;
+            font-size: .85rem;
+            background: #fff;
+            padding: 0 .25rem;
+            border: 1px solid #ccc
+        }
+
+        .mask.hidden {
+            background: #000;
+            cursor: pointer
+        }
+
+        /* не показувати текстові мітки (2A, 2B, …) на авто-масках */
+        .mask .label {
+            display: none;
+        }
+
+
+        /* у тренуванні клік -> показати */
     </style>
 </head>
 
 <body>
     <h1>Cloze-Test (перший крок)</h1>
+
+    <!-- ЗОБРАЖЕННЯ: авто-оклюзія -->
+    <h2>Зображення</h2>
+    <div class="row">
+        <input type="file" id="imgInput" accept="image/*" multiple>
+        <label><input type="checkbox" id="imgAuto" checked> Авто-оклюзія (випадкові ділянки)</label>
+        <!-- Використовуємо той самий повзунок "Складність" нижче -->
+    </div>
+    <div id="figures"></div>
+    <hr>
 
     <!-- 1) Ввід тексту -->
     <label for="text">Встав свій текст:</label><br>
@@ -69,6 +147,28 @@
         // ===== СТАН (те, що зберігаємо між натисканнями) ======================
         let hidden = {};   // id -> правильне слово
         let counter = 0;   // лічильник пропусків
+
+        // ==== ЗОБРАЖЕННЯ: стан та утиліти ====
+        let figures = [];     // [{id, el, imgBox, regions:[{key,x,y,w,h,el,hidden}]}]
+        let figCounter = 0;
+
+        const toDataURL = f => new Promise(res => {
+            const r = new FileReader(); r.onload = () => res(r.result); r.readAsDataURL(f);
+        });
+        const nextKey = n => String.fromCharCode('A'.charCodeAt(0) + n); // 0->A
+        function randRange(min, max) { return min + Math.random() * (max - min); }
+
+        // чи перекриваються два прямокутники з буфером pad (пікселі)
+        // перетин прямокутників з буфером pad (пікселі)
+        // Перетин прямокутників: повертає true, якщо ПЕРЕТИН Є.
+        // Краї можуть торкатись: у такому разі ПЕРЕТИНУ НЕМА (strict < >)
+        function rectsOverlap(a, b, pad = 0) {
+            const ax1 = a.x - pad, ay1 = a.y - pad, ax2 = a.x + a.w + pad, ay2 = a.y + a.h + pad;
+            const bx1 = b.x - pad, by1 = b.y - pad, bx2 = b.x + b.w + pad, by2 = b.y + b.h + pad;
+
+            // Перетин є тоді й лише тоді, коли проєкції строго перекриваються по обох осях
+            return (ax1 < bx2 && ax2 > bx1 && ay1 < by2 && ay2 > by1);
+        }
 
         // Допоміжне: розпізнати та зберегти розділовий знак у кінці слова
         const endPunctRE = /[.,!?;:()"'»«\]\[]$/;
@@ -160,6 +260,9 @@
                 out.appendChild(span);
                 out.appendChild(document.createTextNode(' ')); // пробіл між словами
             });
+            // Після генерації текстових пропусків — згенерувати "дірки" на зображеннях (якщо ввімкнено)
+            autoOccludeAll();
+
         }
 
         // Перевірка відповідей
@@ -183,6 +286,22 @@
             document.getElementById('result').textContent = `Правильно: ${ok}/${total}`;
         }
 
+        // Завантаження зображень
+        document.getElementById('imgInput').addEventListener('change', (e) => {
+            if (!e.target.files?.length) return;
+            addImages([...e.target.files]);
+            e.target.value = ''; // очистити input
+        });
+
+        // Якщо міняємо "Складність" — і хочемо одразу бачити нову конфігурацію "дір"
+        document.getElementById('percent').addEventListener('input', () => {
+            autoOccludeAll();
+        });
+        // Вкл/викл авто-оклюзії
+        document.getElementById('imgAuto').addEventListener('change', () => {
+            autoOccludeAll();
+        });
+
         // Події на кнопках
         document.getElementById('btnGen').addEventListener('click', generateCloze);
         document.getElementById('btnCheck').addEventListener('click', checkAnswers);
@@ -197,6 +316,147 @@
                 generateCloze();
             }
         });
+
+        // Додати завантажені зображення у галерею
+        async function addImages(files) {
+            for (const f of files) {
+                const url = await toDataURL(f);
+                createFigure(url, f.name.replace(/\.\w+$/, ''));
+            }
+        }
+
+        // Створити "Рис. N" з контейнером для масок
+        function createFigure(url, title = '') {
+            figCounter++;
+            const id = figCounter;
+
+            const wrap = document.createElement('div');
+            wrap.className = 'figure';
+            wrap.dataset.id = id;
+
+            const head = document.createElement('div');
+            head.className = 'fig-head';
+            head.textContent = `Рис. ${id}${title ? `: ${title}` : ''}`;
+
+            const imgBox = document.createElement('div');
+            imgBox.className = 'img-box';
+
+            const img = document.createElement('img');
+            img.src = url;
+            img.alt = title || `Рис. ${id}`;
+
+            imgBox.appendChild(img);
+            wrap.appendChild(head);
+            wrap.appendChild(imgBox);
+            document.getElementById('figures').appendChild(wrap);
+
+            const fig = { id, el: wrap, imgBox, regions: [] };
+            figures.push(fig);
+
+            // У тренуванні: клік по масці показує/ховає її
+            imgBox.addEventListener('click', (e) => {
+                const m = e.target.closest('.mask'); if (!m) return;
+                m.classList.toggle('hidden');
+            });
+
+            // Після завантаження картинки — якщо авто-оклюзія увімкнена, генеруй "дірки"
+            img.addEventListener('load', () => {
+                if (document.getElementById('imgAuto')?.checked) {
+                    autoOccludeAll(); // згенерує маски під поточну "Складність"
+                }
+            });
+        }
+
+        // Згенерувати випадкові "дірки" на всіх зображеннях (кількість/розмір від "Складність")
+        // Авто-оклюзія: цільове покриття площі = 0..0.8 від відсотка "Складність"
+        function autoOccludeAll() {
+            const auto = document.getElementById('imgAuto')?.checked;
+            if (!auto) return;
+
+            // p: 0..1; targetFrac: 0..0.8 (тобто 80% на максимумі)
+            const p = (+document.getElementById('percent').value || 0) / 100;
+            const targetFrac = 0.8 * p;
+
+            figures.forEach(fig => {
+                // очистити попередні лунки
+                fig.regions.forEach(r => r.el.remove());
+                fig.regions = [];
+
+                const box = fig.imgBox;
+                const W = box.clientWidth, H = box.clientHeight;
+                if (W < 20 || H < 20) return;
+
+                const area = W * H;
+                const targetArea = targetFrac * area;          // скільки сумарно треба закрити
+                const pad = 0; // маски можуть торкатись, але не перетинатись
+
+                // Діапазон розмірів ОДНІЄЇ лунки (як частка від площі зображення).
+                // На більшій складності верхня межа трохи більша.
+                const minBlockFrac = 0.02 + 0.02 * p;           // 2%..4% від площі
+                const maxBlockFrac = 0.06 + 0.12 * p;           // 6%..18% від площі
+
+                let covered = 0;                                 // вже закрито
+                let safety = 0;                                 // проти нескінч. циклів
+
+                while (covered < targetArea * 0.98 && safety < 500) {
+                    safety++;
+
+                    const remaining = targetArea - covered;
+                    // планова площа наступної лунки (не більше ніж лишилось)
+                    let A = Math.min(remaining, randRange(minBlockFrac, maxBlockFrac) * area);
+                    if (A < 64) break; // надто малесенька лунка — зупиняємось
+
+                    // випадкове співвідношення сторін
+                    const ar = randRange(0.6, 1.6);
+                    let w = Math.sqrt(A * ar);
+                    let h = A / w;
+
+                    // підрізаємо до меж контейнера
+                    if (w > W - pad * 2) { const s = (W - pad * 2) / w; w *= s; h *= s; }
+                    if (h > H - pad * 2) { const s = (H - pad * 2) / h; w *= s; h *= s; }
+                    w = Math.max(8, Math.floor(w));
+                    h = Math.max(8, Math.floor(h));
+
+                    // шукаємо позицію без перетинів; якщо тісно — зменшуємо
+                    let ok = false, tries = 0;
+                    let x = 0, y = 0;
+                    while (!ok && tries < 80) {
+                        tries++;
+                        x = Math.floor(randRange(pad, Math.max(pad, W - pad - w)));
+                        y = Math.floor(randRange(pad, Math.max(pad, H - pad - h)));
+                        const cand = { x, y, w, h };
+                        ok = fig.regions.every(r => !rectsOverlap(cand, r, pad));
+
+                        // кожні 20 спроб трохи зменшуємо лунку — так легше вписатись
+                        if (!ok && (tries === 20 || tries === 40 || tries === 60)) {
+                            w = Math.max(8, Math.floor(w * 0.88));
+                            h = Math.max(8, Math.floor(h * 0.88));
+                        }
+                    }
+                    if (!ok) break; // немає місця — зупиняємось
+
+                    // ставимо лунку
+                    const el = document.createElement('div');
+                    el.className = 'mask hidden';
+                    Object.assign(el.style, { left: x + 'px', top: y + 'px', width: w + 'px', height: h + 'px' });
+
+                    // ключ залишаємо (може згодитись), але .label приховано CSS'ом
+                    const key = fig.id + String.fromCharCode(65 + fig.regions.length);
+                    el.innerHTML = `<span class="label">${key}</span>`;
+
+                    box.appendChild(el);
+                    fig.regions.push({ key, x, y, w, h, el, hidden: true });
+                    covered += w * h;
+                }
+
+                // // (необов'язково) — подивитись, що вийшло у відсотках
+                // console.log(`Рис.${fig.id}: покрито ${(covered/area*100).toFixed(1)}% (ціль ${(targetArea/area*100).toFixed(1)}%)`);
+            });
+        }
+
+
+
+
     </script>
 </body>
 
