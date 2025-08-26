@@ -106,9 +106,6 @@
         .mask .label {
             display: none;
         }
-
-
-        /* у тренуванні клік -> показати */
     </style>
 </head>
 
@@ -120,7 +117,12 @@
     <div class="row">
         <input type="file" id="imgInput" accept="image/*" multiple>
         <label><input type="checkbox" id="imgAuto" checked> Авто-оклюзія (випадкові ділянки)</label>
-        <!-- Використовуємо той самий повзунок "Складність" нижче -->
+        <!-- існуючий тумблер логів -->
+        <label style="margin-left:1rem"><input type="checkbox" id="debugLog"> Показувати логи</label>
+        <!-- НОВЕ: окремий відсоток складності для зображень -->
+        <label style="margin-left:1rem">Складність зображень (%):
+            <input id="imgPercent" type="number" value="20" min="0" max="100" step="5">
+        </label>
     </div>
     <div id="figures"></div>
     <hr>
@@ -156,20 +158,106 @@
             const r = new FileReader(); r.onload = () => res(r.result); r.readAsDataURL(f);
         });
         const nextKey = n => String.fromCharCode('A'.charCodeAt(0) + n); // 0->A
-        function randRange(min, max) { return min + Math.random() * (max - min); }
 
-        // чи перекриваються два прямокутники з буфером pad (пікселі)
-        // перетин прямокутників з буфером pad (пікселі)
-        // Перетин прямокутників: повертає true, якщо ПЕРЕТИН Є.
-        // Краї можуть торкатись: у такому разі ПЕРЕТИНУ НЕМА (strict < >)
         function rectsOverlap(a, b, pad = 0) {
             const ax1 = a.x - pad, ay1 = a.y - pad, ax2 = a.x + a.w + pad, ay2 = a.y + a.h + pad;
             const bx1 = b.x - pad, by1 = b.y - pad, bx2 = b.x + b.w + pad, by2 = b.y + b.h + pad;
-
-            // Перетин є тоді й лише тоді, коли проєкції строго перекриваються по обох осях
+            // перетин ТІЛЬКИ якщо строго перекриваються по обох осях (доторки дозволені)
             return (ax1 < bx2 && ax2 > bx1 && ay1 < by2 && ay2 > by1);
         }
 
+        function lerp(a, b, t) { return a + (b - a) * t; }
+        function randRange(min, max) { return min + Math.random() * (max - min); }
+
+        // Прямокутник, обрізаний рамками картинки [0,W]×[0,H]
+        function clipRectToBox(rect, W, H) {
+            const x1 = Math.max(0, rect.x);
+            const y1 = Math.max(0, rect.y);
+            const x2 = Math.min(W, rect.x + rect.w);
+            const y2 = Math.min(H, rect.y + rect.h);
+            return { x1, y1, x2, y2, w: Math.max(0, x2 - x1), h: Math.max(0, y2 - y1) };
+        }
+
+        // Площа видимої частини (після обрізання рамками картинки)
+        function clippedArea(rect, W, H) {
+            const c = clipRectToBox(rect, W, H);
+            return c.w * c.h;
+        }
+
+        // Перетин перевіряємо на ОБРІЗАНИХ прямокутниках (доторки дозволені)
+        function rectsOverlapClipped(a, b, W, H) {
+            const A = clipRectToBox(a, W, H);
+            const B = clipRectToBox(b, W, H);
+            if (A.w <= 0 || A.h <= 0 || B.w <= 0 || B.h <= 0) return false; // нічого не видно → нехай
+            return (A.x1 < B.x2 && A.x2 > B.x1 && A.y1 < B.y2 && A.y2 > B.y1);
+        }
+
+        // Підбір одного прямокутника з дозволеним "виходом" за межі
+        function placeRectWithOverspill(fig, desiredVisibleArea, W, H, overspill = 0.35, maxTries = 200) {
+            // overspill=0.35 → дозволяємо до 35% ширини/висоти виходити за межі
+            let scale = 1.0;
+            for (let t = 0; t < maxTries; t++) {
+                // Бажана видима площа може втрачатися через обрізання → компенсуємо scale
+                const target = desiredVisibleArea * scale;
+
+                // Випадкове співвідношення сторін, з нього w,h ПЕРЕД обрізанням
+                const r = 0.6 + Math.random() * 1.1;           // 0.6..1.7
+                let w = Math.sqrt(target * r);
+                let h = Math.max(1, target / w);
+
+                // Мін/макс габарити до рандомізації позиції
+                w = Math.max(12, Math.round(w));
+                h = Math.max(12, Math.round(h));
+
+                // Дозволяємо виходити за межі: випадкова позиція в розширеному діапазоні
+                const minX = -overspill * w, maxX = W - (1 - overspill) * w;
+                const minY = -overspill * h, maxY = H - (1 - overspill) * h;
+                const x = Math.floor(minX + Math.random() * (maxX - minX));
+                const y = Math.floor(minY + Math.random() * (maxY - minY));
+                const cand = { x, y, w, h };
+
+                // Перевірка неперетину (по видимій частині)
+                const ok = fig.regions.every(r => !rectsOverlapClipped(cand, r, W, H));
+                if (!ok) {
+                    if (t === Math.floor(maxTries * 0.5) || t === Math.floor(maxTries * 0.75)) scale *= 0.9; // трохи зменшуємо
+                    continue;
+                }
+
+                // Яка фактична видима площа?
+                const vis = clippedArea(cand, W, H);
+                if (vis < desiredVisibleArea * 0.8) { // замало — збільшуємо спробою
+                    scale *= 1.15;
+                    continue;
+                }
+
+                return { ...cand, visible: vis };
+            }
+            return null;
+        }
+
+        function placeRectNonOverlap(fig, area, W, H, pad = 0, maxTries = 150) {
+            let a = area, tries = 0;
+            while (tries < maxTries) {
+                tries++;
+                let r = randRange(0.6, 1.7);         // aspect ratio
+                let w = Math.sqrt(a * r);
+                let h = Math.max(1, a / w);
+                w = Math.min(W * 0.95, Math.max(8, Math.round(w)));
+                h = Math.min(H * 0.95, Math.max(8, Math.round(h)));
+
+                const x = Math.max(0, Math.floor(Math.random() * (W - w)));
+                const y = Math.max(0, Math.floor(Math.random() * (H - h)));
+                const cand = { x, y, w, h };
+
+                if (fig.regions.every(rec => !rectsOverlap(cand, rec, pad))) return cand;
+
+                // тісно? зменшуємось і пробуємо знову
+                if (tries === 60 || tries === 100) a *= 0.8;
+            }
+            return null;
+        }
+
+        // ----------- ТЕКСТ -------------
         // Допоміжне: розпізнати та зберегти розділовий знак у кінці слова
         const endPunctRE = /[.,!?;:()"'»«\]\[]$/;
 
@@ -199,7 +287,7 @@
 
             // 2) Кінцеві символи: спершу «важкі» обрамлення, потім звичайна пунктуація.
             //    Дозволяємо кілька символів підряд, наприклад: **слово**,"  або  слово!?
-            const trailMatch = str.match(/(["'`*_«»(){}\[\]<>]+|[.,!?;:%]+)+$/u);
+            const trailMatch = str.match(/(["'`*_«»(){}\[\]<>]+|[.,!?:%]+)+$/u);
             const trail = trailMatch ? trailMatch[0] : "";
 
             // 3) Серцевина (core) — те, що між lead і trail
@@ -207,7 +295,6 @@
 
             return { lead, core, trail };
         }
-
 
         // Головне: згенерувати пропуски
         function generateCloze() {
@@ -229,7 +316,7 @@
             const chosen = chooseRandomIndices(tokens.length, howMany);
 
             tokens.forEach((tok, i) => {
-                // Нове розбиття слова на lead/core/trail для випадків зі знаками пунктуації на кінці ТА початку як от: «слово», **слово**
+                // Нове розбиття слова на lead/core/trail для випадків зі знаками пунктуації на кінці ТА початку
                 const { lead, core, trail } = splitWord(tok);
 
                 const span = document.createElement('span');
@@ -262,7 +349,6 @@
             });
             // Після генерації текстових пропусків — згенерувати "дірки" на зображеннях (якщо ввімкнено)
             autoOccludeAll();
-
         }
 
         // Перевірка відповідей
@@ -295,6 +381,10 @@
 
         // Якщо міняємо "Складність" — і хочемо одразу бачити нову конфігурацію "дір"
         document.getElementById('percent').addEventListener('input', () => {
+            autoOccludeAll();
+        });
+        // ОКРЕМА складність зображень
+        document.getElementById('imgPercent').addEventListener('input', () => {
             autoOccludeAll();
         });
         // Вкл/викл авто-оклюзії
@@ -367,18 +457,86 @@
             });
         }
 
-        // Згенерувати випадкові "дірки" на всіх зображеннях (кількість/розмір від "Складність")
-        // Авто-оклюзія: цільове покриття площі = 0..0.8 від відсотка "Складність"
+        /* ===================== фаза росту масок + авто-оклюзія ===================== */
+
+        function applyRectToEl(region) {
+            Object.assign(region.el.style, {
+                left: region.x + 'px',
+                top: region.y + 'px',
+                width: region.w + 'px',
+                height: region.h + 'px'
+            });
+        }
+
+        function visibleArea(r, W, H) {
+            return clippedArea(r, W, H);
+        }
+
+        function tryGrow(fig, idx, dir, step, W, H) {
+            const cur = fig.regions[idx];
+            const cand = { x: cur.x, y: cur.y, w: cur.w, h: cur.h };
+
+            if (dir === 'right') cand.w = Math.max(1, cur.w + step);
+            else if (dir === 'bottom') cand.h = Math.max(1, cur.h + step);
+            else return null;
+
+            for (let j = 0; j < fig.regions.length; j++) {
+                if (j === idx) continue;
+                if (rectsOverlapClipped(cand, fig.regions[j], W, H)) return null;
+            }
+
+            const oldVis = visibleArea(cur, W, H);
+            const newVis = visibleArea(cand, W, H);
+            const delta = newVis - oldVis;
+            if (delta <= 0.1) return null;
+
+            return { cand, delta };
+        }
+
+        function growMasksToTarget(fig, target, W, H, maxIters = 1500) {
+            let covered = fig.regions.reduce((s, r) => s + visibleArea(r, W, H), 0);
+            const stepBase = Math.max(2, Math.round(Math.min(W, H) / 80));
+
+            let it = 0;
+            while (covered < target && it++ < maxIters) {
+                let best = null;
+
+                for (let i = 0; i < fig.regions.length; i++) {
+                    const c1 = tryGrow(fig, i, 'right', stepBase, W, H);
+                    const c2 = tryGrow(fig, i, 'bottom', stepBase, W, H);
+
+                    if (c1 && (!best || c1.delta > best.delta)) best = { i, dir: 'right', ...c1 };
+                    if (c2 && (!best || c2.delta > best.delta)) best = { i, dir: 'bottom', ...c2 };
+                }
+
+                if (!best) break;
+
+                const r = fig.regions[best.i];
+                r.x = best.cand.x; r.y = best.cand.y; r.w = best.cand.w; r.h = best.cand.h;
+                applyRectToEl(r);
+                covered += best.delta;
+
+                if (target - covered < Math.max(20, 0.002 * W * H)) break;
+            }
+        }
+
         function autoOccludeAll() {
             const auto = document.getElementById('imgAuto')?.checked;
             if (!auto) return;
 
-            // p: 0..1; targetFrac: 0..0.8 (тобто 80% на максимумі)
-            const p = (+document.getElementById('percent').value || 0) / 100;
-            const targetFrac = 0.8 * p;
+            const debug = !!document.getElementById('debugLog')?.checked;
+
+            // НОВЕ: беремо окремий відсоток для зображень, інакше — з текстового контролу.
+            let dImg = +document.getElementById('imgPercent')?.value;
+            if (Number.isNaN(dImg)) dImg = +document.getElementById('percent').value || 0;
+            const d = Math.min(100, Math.max(0, dImg)) / 100; // 0..1
+
+            const targetFrac = 0.8 * d;                    // максимум 80% при 100% складності
+            const MAX_MASKS = Math.min(6, Math.max(1, Math.ceil(1 + d * 5))); // 1..6
+            const overspill = 0.35;
+            const eps = 0.02;
 
             figures.forEach(fig => {
-                // очистити попередні лунки
                 fig.regions.forEach(r => r.el.remove());
                 fig.regions = [];
 
@@ -386,76 +544,54 @@
                 const W = box.clientWidth, H = box.clientHeight;
                 if (W < 20 || H < 20) return;
 
-                const area = W * H;
-                const targetArea = targetFrac * area;          // скільки сумарно треба закрити
-                const pad = 0; // маски можуть торкатись, але не перетинатись
+                const A = W * H;
+                const target = A * targetFrac;
 
-                // Діапазон розмірів ОДНІЄЇ лунки (як частка від площі зображення).
-                // На більшій складності верхня межа трохи більша.
-                const minBlockFrac = 0.02 + 0.02 * p;           // 2%..4% від площі
-                const maxBlockFrac = 0.06 + 0.12 * p;           // 6%..18% від площі
+                let covered = 0, placed = 0;
 
-                let covered = 0;                                 // вже закрито
-                let safety = 0;                                 // проти нескінч. циклів
+                // Фаза 1
+                while (covered < target * (1 - eps) && placed < MAX_MASKS) {
+                    const remain = Math.max(1, target - covered);
+                    const left = MAX_MASKS - placed;
 
-                while (covered < targetArea * 0.98 && safety < 500) {
-                    safety++;
+                    const minVis = A * 0.10 * Math.max(0.2, d);
+                    const maxVis = A * 0.92;
+                    const desiredVisible = Math.min(
+                        maxVis,
+                        Math.max(minVis, remain / left * (0.95 + Math.random() * 0.1))
+                    );
 
-                    const remaining = targetArea - covered;
-                    // планова площа наступної лунки (не більше ніж лишилось)
-                    let A = Math.min(remaining, randRange(minBlockFrac, maxBlockFrac) * area);
-                    if (A < 64) break; // надто малесенька лунка — зупиняємось
-
-                    // випадкове співвідношення сторін
-                    const ar = randRange(0.6, 1.6);
-                    let w = Math.sqrt(A * ar);
-                    let h = A / w;
-
-                    // підрізаємо до меж контейнера
-                    if (w > W - pad * 2) { const s = (W - pad * 2) / w; w *= s; h *= s; }
-                    if (h > H - pad * 2) { const s = (H - pad * 2) / h; w *= s; h *= s; }
-                    w = Math.max(8, Math.floor(w));
-                    h = Math.max(8, Math.floor(h));
-
-                    // шукаємо позицію без перетинів; якщо тісно — зменшуємо
-                    let ok = false, tries = 0;
-                    let x = 0, y = 0;
-                    while (!ok && tries < 80) {
-                        tries++;
-                        x = Math.floor(randRange(pad, Math.max(pad, W - pad - w)));
-                        y = Math.floor(randRange(pad, Math.max(pad, H - pad - h)));
-                        const cand = { x, y, w, h };
-                        ok = fig.regions.every(r => !rectsOverlap(cand, r, pad));
-
-                        // кожні 20 спроб трохи зменшуємо лунку — так легше вписатись
-                        if (!ok && (tries === 20 || tries === 40 || tries === 60)) {
-                            w = Math.max(8, Math.floor(w * 0.88));
-                            h = Math.max(8, Math.floor(h * 0.88));
-                        }
+                    const rect = placeRectWithOverspill(fig, desiredVisible, W, H, overspill, 360);
+                    if (!rect) {
+                        const fallback = placeRectWithOverspill(fig, Math.max(A * 0.05, desiredVisible * 0.7), W, H, overspill, 260);
+                        if (!fallback) break;
+                        addMask(fig, fallback); covered += fallback.visible; placed++; continue;
                     }
-                    if (!ok) break; // немає місця — зупиняємось
-
-                    // ставимо лунку
-                    const el = document.createElement('div');
-                    el.className = 'mask hidden';
-                    Object.assign(el.style, { left: x + 'px', top: y + 'px', width: w + 'px', height: h + 'px' });
-
-                    // ключ залишаємо (може згодитись), але .label приховано CSS'ом
-                    const key = fig.id + String.fromCharCode(65 + fig.regions.length);
-                    el.innerHTML = `<span class="label">${key}</span>`;
-
-                    box.appendChild(el);
-                    fig.regions.push({ key, x, y, w, h, el, hidden: true });
-                    covered += w * h;
+                    addMask(fig, rect); covered += rect.visible; placed++;
                 }
 
-                // // (необов'язково) — подивитись, що вийшло у відсотках
-                // console.log(`Рис.${fig.id}: покрито ${(covered/area*100).toFixed(1)}% (ціль ${(targetArea/area*100).toFixed(1)}%)`);
+                // Фаза 2
+                if (covered < target * (1 - eps) && fig.regions.length) {
+                    growMasksToTarget(fig, target, W, H);
+                    covered = fig.regions.reduce((s, r) => s + clippedArea(r, W, H), 0);
+                }
+
+                const pct = Math.round((covered / A) * 1000) / 10;
+                const goal = Math.round(targetFrac * 1000) / 10;
+                if (debug) console.log(`Рис.${fig.id}: покрито ${pct}% (ціль ${goal}%), масок ${fig.regions.length}/${MAX_MASKS}`);
             });
+
+            function addMask(fig, { x, y, w, h }) {
+                const el = document.createElement('div');
+                el.className = 'mask hidden';
+                Object.assign(el.style, { left: x + 'px', top: y + 'px', width: w + 'px', height: h + 'px' });
+                const key = fig.id + String.fromCharCode(65 + fig.regions.length); // 1A, 1B, ...
+                el.innerHTML = `<span class="label">${key}</span>`;
+                fig.imgBox.appendChild(el);
+                fig.regions.push({ key, x, y, w, h, el, hidden: true });
+            }
         }
-
-
-
+        /* =================== КІНЕЦЬ БЛОКУ =================== */
 
     </script>
 </body>
