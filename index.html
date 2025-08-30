@@ -153,7 +153,8 @@
 
     <!-- 1) Ввід тексту -->
     <label for="text">Встав свій текст:</label><br>
-    <textarea id="text" placeholder="Наприклад: Heute lernen wir Reihen. Die berühmte Formel lautet $E=mc^2$."></textarea>
+    <textarea id="text"
+        placeholder="Наприклад: Heute lernen wir Reihen. Die berühmte Formel lautet $E=mc^2$."></textarea>
 
     <!-- 2) Налаштування + кнопки -->
     <div id="controls">
@@ -164,7 +165,8 @@
         <!-- додано: математика -->
         <div style="margin-top:.5rem">
             <label><input type="checkbox" id="processMath"> Перевіряти математичну нотацію</label>
-            <label style="margin-left:1rem"><input type="checkbox" id="noHideMathCommands"> Не ховати команди в математиці</label>
+            <label style="margin-left:1rem"><input type="checkbox" id="noHideMathCommands"> Не ховати команди в
+                математиці</label>
         </div>
     </div>
 
@@ -426,7 +428,7 @@
 
                     // Розбір у лексеми
                     const lex = core.match(
-                        /(\\\\|\\[a-zA-Z]+|\\\{|\\\}|[a-zA-Z]+|\d+|[=+\-*/^_:&|]|[{}\[\]()]|\\,|\\;|\\!|,|\.|\\%|!|')/g
+                        /(\\\\|\\[A-Za-z]+|\\\{|\\\}|[A-Za-z]+|\d+|[=+\-*/^_:&|]|[{}\[\]()]|\\,|\\;|\\!|,|\.|\\%|!|['\u2032\u2033\u2034\u00B4\u02B9\u02BC\u2019]|\s+)/gu
                     ) || [core];
 
                     // Що можна ховати
@@ -467,17 +469,8 @@
                         }
                     }
 
-                    // Додати пробіл між \cmd і наступною літерою, щоб не було "злипань"
-                    let formulaStr = '';
-                    for (let k = 0; k < rebuilt.length; k++) {
-                        const part = rebuilt[k];
-                        if (k > 0) {
-                            const prev = rebuilt[k - 1];
-                            const needSpace = /^\\[a-zA-Z]+$/.test(prev) && /^[A-Za-z]/.test(part) && !String(part).startsWith('\\');
-                            if (needSpace) formulaStr += ' ';
-                        }
-                        formulaStr += part;
-                    }
+                    // Просто склеюємо: пробіли вже збережені як \s+
+                    const formulaStr = rebuilt.join('');
 
                     span.textContent = delim + formulaStr + delim;
                     out.appendChild(span);
