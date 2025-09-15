@@ -427,16 +427,43 @@
                     const core = tStr.slice(delim.length, -delim.length);
 
                     // Розбір у лексеми
-                    const lex = core.match(
-                        /(\\\\|\\[A-Za-z]+|\\\{|\\\}|[A-Za-z]+|\d+|[=+\-*/^_:&|]|[{}\[\]()]|\\,|\\;|\\!|,|\.|\\%|!|['\u2032\u2033\u2034\u00B4\u02B9\u02BC\u2019]|\s+)/gu
+                    // після:
+                    let lex = core.match(
+                        /(\\\\|\\[A-Za-z]+|\\\{|\\\}|[A-Za-z]+|\d+|[=+\-*/^_:&|<>]|[{}\[\]()]|\\,|\\;|\\!|,|\.|\\%|!|['\u2032\u2033\u2034\u00B4\u02B9\u02BC\u2019]|\s+|.)/gsu
                     ) || [core];
+
+                    // ДОДАНО: зібрати \text{...} у єдиний токен (не ховаємо всередині)
+                    function mergeTextGroups(tokens) {
+                        const out = [];
+                        for (let i = 0; i < tokens.length; i++) {
+                            const t = tokens[i];
+                            if (t === '\\text' && tokens[i + 1] === '{') {
+                                let j = i + 2, depth = 1;
+                                let buf = ['\\text', '{'];
+                                while (j < tokens.length && depth > 0) {
+                                    const s = tokens[j++];
+                                    buf.push(s);
+                                    if (s === '{') depth++;
+                                    else if (s === '}') depth--;
+                                }
+                                out.push(buf.join(''));
+                                i = j - 1; // перестрибуємо до закривної дужки
+                            } else {
+                                out.push(t);
+                            }
+                        }
+                        return out;
+                    }
+                    lex = mergeTextGroups(lex);
+
 
                     // Що можна ховати
                     const hideable = [];
                     for (let k = 0; k < lex.length; k++) {
                         const lx = lex[k];
                         const isCmd = /^\\[a-zA-Z]+$/.test(lx);
-                        const ok = (
+                        const isTextGroup = typeof lx === 'string' && lx.startsWith('\\text{');
+                        const ok = !isTextGroup && (
                             (isCmd && !RESERVED.has(lx) && lx.length <= 16 && !noHideCmds) ||
                             (!isCmd && /^[a-zA-Z]$/.test(lx)) ||
                             (!isCmd && /^\d+$/.test(lx))
