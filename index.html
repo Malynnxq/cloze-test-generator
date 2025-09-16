@@ -3,7 +3,7 @@
 
 <head>
     <meta charset="UTF-8">
-    <title>Cloze-Test (Minimal)</title>
+    <title>Cloze-Test (Minimal + Timer)</title>
     <style>
         body {
             font-family: system-ui, sans-serif;
@@ -118,6 +118,41 @@
         .mask .label {
             display: none;
         }
+
+        /* ===== Таймер ===== */
+        #timerPanel {
+            display: flex;
+            flex-wrap: wrap;
+            gap: .5rem .75rem;
+            align-items: center;
+            padding: .75rem 1rem;
+            border: 1px solid #e5e7eb;
+            border-radius: .5rem;
+            background: #f9fafb;
+            margin: 1rem 0;
+        }
+
+        #timerDisplay {
+            font-variant-numeric: tabular-nums;
+            font-weight: 700;
+            font-size: 1.25rem;
+            padding: .25rem .5rem;
+            border-radius: .375rem;
+            border: 1px solid #e5e7eb;
+            background: #fff;
+            min-width: 7.5ch;
+            text-align: center;
+        }
+
+        #timerPanel button {
+            padding: .4rem .8rem;
+            border-radius: .375rem;
+            border: 1px solid #d1d5db;
+            background: #fff;
+            cursor: pointer;
+        }
+
+        #timerPanel button:disabled { opacity: .6; cursor: not-allowed; }
     </style>
 
     <!-- MathJax 3 (TeX → SVG) — додано -->
@@ -135,6 +170,15 @@
 
 <body>
     <h1>Cloze-Test (перший крок)</h1>
+
+    <!-- ====== Таймер ====== -->
+    <div id="timerPanel" role="group" aria-label="Таймер вправи">
+        <span id="timerDisplay" aria-live="polite">00:00</span>
+        <button id="timerStartPause">Старт</button>
+        <button id="timerReset" disabled>Скинути</button>
+        <label style="margin-left:.5rem"><input type="checkbox" id="autoStart" checked> Авто-старт при генерації</label>
+        <label><input type="checkbox" id="autoStop" checked> Авто-стоп при перевірці</label>
+    </div>
 
     <!-- ЗОБРАЖЕННЯ: авто-оклюзія -->
     <h2>Зображення</h2>
@@ -181,6 +225,58 @@
     <p id="result"></p>
 
     <script>
+        // ====== ТАЙМЕР (простий секундомір) ======
+        const display = document.getElementById('timerDisplay');
+        const btnStartPause = document.getElementById('timerStartPause');
+        const btnReset = document.getElementById('timerReset');
+        const chkAutoStart = document.getElementById('autoStart');
+        const chkAutoStop = document.getElementById('autoStop');
+
+        let tRunning = false;
+        let tElapsedMs = 0;
+        let tLast = 0;
+        let tHandle = null;
+
+        function fmt(ms) {
+            const totalSec = Math.floor(ms / 1000);
+            const m = String(Math.floor(totalSec / 60)).padStart(2, '0');
+            const s = String(totalSec % 60).padStart(2, '0');
+            return `${m}:${s}`;
+        }
+        function updateDisplay() { display.textContent = fmt(tElapsedMs); }
+        function tick() {
+            const now = performance.now();
+            const dt = now - tLast;
+            tLast = now;
+            tElapsedMs += dt;
+            updateDisplay();
+        }
+        function startTimer() {
+            if (tRunning) return;
+            tRunning = true;
+            tLast = performance.now();
+            tHandle = setInterval(tick, 100);
+            btnStartPause.textContent = 'Пауза';
+            btnReset.disabled = false;
+        }
+        function pauseTimer() {
+            if (!tRunning) return;
+            tRunning = false;
+            clearInterval(tHandle);
+            btnStartPause.textContent = 'Старт';
+        }
+        function resetTimer() {
+            pauseTimer();
+            tElapsedMs = 0;
+            updateDisplay();
+            btnReset.disabled = true;
+        }
+        btnStartPause.addEventListener('click', () => {
+            if (tRunning) pauseTimer(); else startTimer();
+        });
+        btnReset.addEventListener('click', resetTimer);
+        updateDisplay();
+
         // ===== СТАН (те, що зберігаємо між натисканнями) ======================
         let hidden = {};   // id -> правильне слово/лексема
         let counter = 0;   // лічильник пропусків
@@ -361,7 +457,7 @@
         // Вирізає обрамлення й пунктуацію з обох боків слова, але повертає їх окремо
         function splitWord(token) {
             const str = String(token ?? "");
-            const leadMatch = str.match(/^(["'`*_«»(){}\[\]<>]+)+/u);
+            const leadMatch = str.match(/^( ["'`*_«»(){}\[\]<>]+)+/u);
             const lead = leadMatch ? leadMatch[0] : "";
             const trailMatch = str.match(/(["'`*_«»(){}\[\]<>]+|[.,!?:%]+)+$/u);
             const trail = trailMatch ? trailMatch[0] : "";
@@ -379,6 +475,9 @@
             const mHead = document.getElementById('mathHeader');
             const mathOn = !!document.getElementById('processMath')?.checked;
             const noHideCmds = !!document.getElementById('noHideMathCommands')?.checked;
+
+            // Таймер: авто-старт, скидання часу
+            if (chkAutoStart.checked) { resetTimer(); startTimer(); }
 
             // скидаємо попередній стан/вивід
             out.innerHTML = '';
@@ -432,7 +531,7 @@
                         /(\\\\|\\[A-Za-z]+|\\\{|\\\}|[A-Za-z]+|\d+|[=+\-*/^_:&|<>]|[{}\[\]()]|\\,|\\;|\\!|,|\.|\\%|!|['\u2032\u2033\u2034\u00B4\u02B9\u02BC\u2019]|\s+|.)/gsu
                     ) || [core];
 
-                    // ДОДАНО: зібрати \text{...} у єдиний токен (не ховаємо всередині)
+                    // ДОДАНО: зібрати \\text{...} у єдиний токен (не ховаємо всередині)
                     function mergeTextGroups(tokens) {
                         const out = [];
                         for (let i = 0; i < tokens.length; i++) {
@@ -556,7 +655,8 @@
                 }
             });
 
-            document.getElementById('result').textContent = `Правильно: ${ok}/${total}`;
+            if (chkAutoStop.checked) pauseTimer();
+            document.getElementById('result').textContent = `Правильно: ${ok}/${total} — Час: ${fmt(tElapsedMs)}`;
         }
 
         // Завантаження зображень
