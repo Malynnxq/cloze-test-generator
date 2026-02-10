@@ -1,0 +1,749 @@
+// ====== ТАЙМЕР (простий секундомір) ======
+const display = document.getElementById('timerDisplay');
+const btnStartPause = document.getElementById('timerStartPause');
+const btnReset = document.getElementById('timerReset');
+const chkAutoStart = document.getElementById('autoStart');
+const chkAutoStop = document.getElementById('autoStop');
+
+let tRunning = false;
+let tElapsedMs = 0;
+let tLast = 0;
+let tHandle = null;
+
+function fmt(ms) {
+    const totalSec = Math.floor(ms / 1000);
+    const m = String(Math.floor(totalSec / 60)).padStart(2, '0');
+    const s = String(totalSec % 60).padStart(2, '0');
+    return `${m}:${s}`;
+}
+function updateDisplay() { display.textContent = fmt(tElapsedMs); }
+function tick() {
+    const now = performance.now();
+    const dt = now - tLast;
+    tLast = now;
+    tElapsedMs += dt;
+    updateDisplay();
+}
+function startTimer() {
+    if (tRunning) return;
+    tRunning = true;
+    tLast = performance.now();
+    tHandle = setInterval(tick, 100);
+    btnStartPause.textContent = 'Пауза';
+    btnReset.disabled = false;
+}
+function pauseTimer() {
+    if (!tRunning) return;
+    tRunning = false;
+    clearInterval(tHandle);
+    btnStartPause.textContent = 'Старт';
+}
+function resetTimer() {
+    pauseTimer();
+    tElapsedMs = 0;
+    updateDisplay();
+    btnReset.disabled = true;
+}
+btnStartPause.addEventListener('click', () => {
+    if (tRunning) pauseTimer(); else startTimer();
+});
+btnReset.addEventListener('click', resetTimer);
+updateDisplay();
+
+// ====== БАТАРЕЯ МАЙСТЕРНОСТІ ======
+const batteryPanel = document.getElementById('batteryPanel');
+const batteryTargetInput = document.getElementById('batteryTarget');
+const batteryShell = document.getElementById('batteryShell');
+const batteryLiquid = document.getElementById('batteryLiquid');
+const batteryStatus = document.getElementById('batteryStatus');
+
+let batteryCount = 0;
+let batteryDraining = false;
+const batteryDrainMs = 5 * 60 * 1000;
+
+function getBatteryTarget() {
+    const v = parseInt(batteryTargetInput.value, 10);
+    return Number.isFinite(v) && v > 0 ? v : 1;
+}
+
+function setBatteryFill(level) {
+    const clamped = Math.max(0, Math.min(1, level));
+    batteryLiquid.style.height = `${clamped * 100}%`;
+    batteryShell.style.setProperty('--battery-wave', `${clamped * 100}%`);
+    batteryShell.style.setProperty('--battery-level', clamped.toString());
+}
+
+function updateBatteryUI() {
+    const target = getBatteryTarget();
+    if (batteryCount > target) batteryCount = target;
+    const level = target > 0 ? batteryCount / target : 0;
+    setBatteryFill(level);
+    batteryStatus.textContent = `Повних серій: ${batteryCount}/${target}`;
+
+    const full = level >= 1;
+    batteryPanel.classList.toggle('is-full', full);
+    if (!full && !batteryDraining) {
+        batteryPanel.classList.remove('is-draining');
+    }
+}
+
+function pulseBattery() {
+    batteryPanel.classList.add('is-filling');
+    setTimeout(() => {
+        batteryPanel.classList.remove('is-filling');
+    }, 700);
+}
+
+function startBatteryDrain() {
+    if (batteryDraining) return;
+    batteryDraining = true;
+    batteryPanel.classList.add('is-draining');
+    batteryPanel.classList.remove('is-filling');
+    batteryTargetInput.disabled = true;
+    const start = performance.now();
+    const tickDrain = (now) => {
+        const t = (now - start) / batteryDrainMs;
+        const level = 1 - t;
+        setBatteryFill(level);
+        if (t < 1) {
+            requestAnimationFrame(tickDrain);
+        } else {
+            batteryDraining = false;
+            batteryCount = 0;
+            batteryPanel.classList.remove('is-full');
+            batteryPanel.classList.remove('is-draining');
+            batteryTargetInput.disabled = false;
+            updateBatteryUI();
+        }
+    };
+    requestAnimationFrame(tickDrain);
+}
+
+batteryTargetInput.addEventListener('input', () => {
+    updateBatteryUI();
+});
+
+batteryShell.addEventListener('click', () => {
+    if (batteryPanel.classList.contains('is-full')) startBatteryDrain();
+});
+
+batteryShell.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' || e.key === ' ') {
+        e.preventDefault();
+        if (batteryPanel.classList.contains('is-full')) startBatteryDrain();
+    }
+});
+
+updateBatteryUI();
+
+// ===== СТАН (те, що зберігаємо між натисканнями) ======================
+let hidden = {};     // id -> правильне слово/лексема
+let counter = 0;     // лічильник пропусків
+let solved = new Set();
+let totalBlanks = 0;
+let solvedFully = false;
+let mathFormulas = [];
+let mathIdToSlot = new Map();
+
+// ==== ЗОБРАЖЕННЯ: стан та утиліти ====
+let figures = [];     // [{id, el, imgBox, regions:[{key,x,y,w,h,el,hidden}]}]
+let figCounter = 0;
+
+const toDataURL = f => new Promise(res => {
+    const r = new FileReader(); r.onload = () => res(r.result); r.readAsDataURL(f);
+});
+// Прямокутник, обрізаний рамками картинки [0,W]×[0,H]
+function clipRectToBox(rect, W, H) {
+    const x1 = Math.max(0, rect.x);
+    const y1 = Math.max(0, rect.y);
+    const x2 = Math.min(W, rect.x + rect.w);
+    const y2 = Math.min(H, rect.y + rect.h);
+    return { x1, y1, x2, y2, w: Math.max(0, x2 - x1), h: Math.max(0, y2 - y1) };
+}
+
+// Площа видимої частини (після обрізання рамками картинки)
+function clippedArea(rect, W, H) {
+    const c = clipRectToBox(rect, W, H);
+    return c.w * c.h;
+}
+
+// Перетин перевіряємо на ОБРІЗАНИХ прямокутниках (доторки дозволені)
+function rectsOverlapClipped(a, b, W, H) {
+    const A = clipRectToBox(a, W, H);
+    const B = clipRectToBox(b, W, H);
+    if (A.w <= 0 || A.h <= 0 || B.w <= 0 || B.h <= 0) return false; // нічого не видно → нехай
+    return (A.x1 < B.x2 && A.x2 > B.x1 && A.y1 < B.y2 && A.y2 > B.y1);
+}
+
+// Підбір одного прямокутника з дозволеним "виходом" за межі
+function placeRectWithOverspill(fig, desiredVisibleArea, W, H, overspill = 0.35, maxTries = 200) {
+    // overspill=0.35 → дозволяємо до 35% ширини/висоти виходити за межі
+    let scale = 1.0;
+    for (let t = 0; t < maxTries; t++) {
+        // Бажана видима площа може втрачатися через обрізання → компенсуємо scale
+        const target = desiredVisibleArea * scale;
+
+        // Випадкове співвідношення сторін, з нього w,h ПЕРЕД обрізанням
+        const r = 0.6 + Math.random() * 1.1;           // 0.6..1.7
+        let w = Math.sqrt(target * r);
+        let h = Math.max(1, target / w);
+
+        // Мін/макс габарити до рандомізації позиції
+        w = Math.max(12, Math.round(w));
+        h = Math.max(12, Math.round(h));
+
+        // Дозволяємо виходити за межі: випадкова позиція в розширеному діапазоні
+        const minX = -overspill * w, maxX = W - (1 - overspill) * w;
+        const minY = -overspill * h, maxY = H - (1 - overspill) * h;
+        const x = Math.floor(minX + Math.random() * (maxX - minX));
+        const y = Math.floor(minY + Math.random() * (maxY - minY));
+        const cand = { x, y, w, h };
+
+        // Перевірка неперетину (по видимій частині)
+        const ok = fig.regions.every(r => !rectsOverlapClipped(cand, r, W, H));
+        if (!ok) {
+            if (t === Math.floor(maxTries * 0.5) || t === Math.floor(maxTries * 0.75)) scale *= 0.9; // трохи зменшуємо
+            continue;
+        }
+
+        // Яка фактична видима площа?
+        const vis = clippedArea(cand, W, H);
+        if (vis < desiredVisibleArea * 0.8) { // замало — збільшуємо спробою
+            scale *= 1.15;
+            continue;
+        }
+
+        return { ...cand, visible: vis };
+    }
+    return null;
+}
+
+// ----------- ТЕКСТ -------------
+// ==== МАТЕМАТИКА: допоміжні (додано) ====
+function tokenizeWithFormulas(str) {
+    const re = /(\$\$[^$]*?\$\$|\$[^$]*?\$)/g; // ?????????????????? $...$ ?? $$...$$
+    const out = [];
+    let last = 0, m;
+
+    const pushSegment = (segment) => {
+        if (!segment) return;
+        const parts = segment.split(/(\s+)/);
+        for (const part of parts) {
+            if (!part) continue;
+            if (/^\s+$/.test(part)) {
+                out.push({ type: 'ws', value: part });
+            } else {
+                out.push({ type: 'text', value: part });
+            }
+        }
+    };
+
+    while ((m = re.exec(str)) !== null) {
+        pushSegment(str.slice(last, m.index));
+        out.push({ type: 'formula', value: m[0] });
+        last = re.lastIndex;
+    }
+    pushSegment(str.slice(last));
+    return out;
+}
+
+function renderFormula(formula) {
+    const parts = formula.slots.map((slot) => {
+        if (slot.type === 'lex') return slot.value;
+        return solved.has(slot.id)
+            ? slot.value
+            : makePlaceholder(slot.id, slot.value, slot.prevLex);
+    });
+    formula.span.textContent = formula.delim + parts.join('') + formula.delim;
+}
+
+/* команди, які не чіпаємо (додано) */
+const RESERVED = new Set([
+    '\\frac', '\\sqrt', '\\sum', '\\int', '\\log', '\\sin', '\\cos', '\\tan',
+    '\\left', '\\right', '\\big', '\\Big', '\\bigl', '\\bigr', '\\Bigl', '\\Bigr',
+    '\\begin', '\\end', '\\bmatrix', '\\pmatrix', '\\vmatrix', '\\cases',
+    '\\text', '\\mathbb', '\\mathrm', '\\operatorname', '\\vec',
+    '&', '\\\\'
+]);
+
+// Плейсхолдер для формул (додано)
+function makePlaceholder(idx, original, prevLex) {
+    const src = String(original || '');
+    const isCmd = /^\\[A-Za-z]+$/.test(src);
+    let phantomArg = isCmd ? 'MMM' : src;
+    if (!/^[A-Za-z0-9]+$/.test(phantomArg)) phantomArg = 'M';
+
+    const ACCENTS = new Set(['\\vec', '\\hat', '\\bar', '\\tilde', '\\overline', '\\overrightarrow', '\\overleftarrow', '\\widehat', '\\widetilde']);
+    const isAccent = ACCENTS.has(String(prevLex || ''));
+
+    if (isAccent) {
+        const inner = `\\textcolor{red}{(${idx})\\,\\underline{\\hphantom{${phantomArg}}}}\\vphantom{M}`;
+        return `{${inner}}`;
+    }
+    const inner = `\\textcolor{red}{(${idx})\\;\\underline{\\hphantom{${phantomArg}}}}`;
+    return `{${inner}}`;
+}
+
+// Вирізає обрамлення й пунктуацію з обох боків слова, але повертає їх окремо
+function splitWord(token) {
+    const str = String(token ?? "");
+    const leadMatch = str.match(/^( ["'`*_«»(){}\[\]<>]+)+/u);
+    const lead = leadMatch ? leadMatch[0] : "";
+    const trailMatch = str.match(/(["'`*_«»(){}\[\]<>]+|[.,!?:%]+)+$/u);
+    const trail = trailMatch ? trailMatch[0] : "";
+    const core = str.slice(lead.length, str.length - trail.length);
+    return { lead, core, trail };
+}
+
+// Головне: згенерувати пропуски
+function generateCloze() {
+    const raw = document.getElementById('text').value;
+    const percent = +document.getElementById('percent').value || 0;
+    const out = document.getElementById('output');
+    const res = document.getElementById('result');
+    const mathOn = !!document.getElementById('processMath')?.checked;
+    const noHideCmds = !!document.getElementById('noHideMathCommands')?.checked;
+
+    // Таймер: авто-старт, скидання часу
+    if (chkAutoStart.checked) { resetTimer(); startTimer(); }
+
+    // скидаємо попередній стан/вивід
+    out.innerHTML = '';
+    res.textContent = '';
+    hidden = {};
+    counter = 0;
+    solved = new Set();
+    totalBlanks = 0;
+    solvedFully = false;
+    mathFormulas = [];
+    mathIdToSlot = new Map();
+
+    if (!raw.trim()) return;
+
+    // НОВЕ: токени з урахуванням $...$/$$...$$ + збереження пробілів/переносів
+    const tokens = tokenizeWithFormulas(raw);
+
+    // Для текстових пропусків — беремо лише текстові токени (не формули і не пробіли)
+    const textIdx = [];
+    for (let i = 0; i < tokens.length; i++) {
+        if (tokens[i].type === 'text') textIdx.push(i);
+    }
+    const howManyText = Math.max(0, Math.round(textIdx.length * percent / 100));
+    // випадково обираємо абсолютні індекси з textIdx
+    const pool = textIdx.slice();
+    const chosenAbs = new Set();
+    while (chosenAbs.size < howManyText && pool.length) {
+        const k = Math.random() * pool.length | 0;
+        chosenAbs.add(pool.splice(k, 1)[0]);
+    }
+
+    tokens.forEach((tok, i) => {
+        if (tok.type === 'ws') {
+            out.appendChild(document.createTextNode(tok.value));
+            return;
+        }
+
+        // === FORMULA ===
+        if (tok.type === 'formula') {
+            const tStr = tok.value;
+            const span = document.createElement('span');
+            span.className = 'word formula';
+
+            if (!mathOn) {
+                // ?????????????? ???? ??
+                span.textContent = tStr;
+                out.appendChild(span);
+                return;
+            }
+
+            const delim = tStr.startsWith('$$') ? '$$' : '$';
+            const core = tStr.slice(delim.length, -delim.length);
+
+            // ???????????? ?? ??????????????
+            // ??????????:
+            let lex = core.match(
+                /(\\|\[A-Za-z]+|\\{|\\}|[A-Za-z]+|\d+|[=+\-*/^_:&|<>]|[{}\[\]()]|\,|\;|\!|,|\.|\%|!|['′″‴´ʹʼ’]|\s+|.)/gsu
+            ) || [core];
+
+            // ????????????: ?????????????? \text{...} ?? ???????????? ?????????? (???? ?????????????? ??????????????????)
+            function mergeTextGroups(tokens) {
+                const out = [];
+                for (let i = 0; i < tokens.length; i++) {
+                    const t = tokens[i];
+                    if (t === '\text' && tokens[i + 1] === '{') {
+                        let j = i + 2, depth = 1;
+                        let buf = ['\text', '{'];
+                        while (j < tokens.length && depth > 0) {
+                            const s = tokens[j++];
+                            buf.push(s);
+                            if (s === '{') depth++;
+                            else if (s === '}') depth--;
+                        }
+                        out.push(buf.join(''));
+                        i = j - 1; // ?????????????????????????? ???? ?????????????????? ??????????
+                    } else {
+                        out.push(t);
+                    }
+                }
+                return out;
+            }
+            lex = mergeTextGroups(lex);
+
+
+            // ???? ?????????? ????????????
+            const hideable = [];
+            for (let k = 0; k < lex.length; k++) {
+                const lx = lex[k];
+                const isCmd = /^\[a-zA-Z]+$/.test(lx);
+                const isTextGroup = typeof lx === 'string' && lx.startsWith('\text{');
+                const ok = !isTextGroup && (
+                    (isCmd && !RESERVED.has(lx) && lx.length <= 16 && !noHideCmds) ||
+                    (!isCmd && /^[a-zA-Z]$/.test(lx)) ||
+                    (!isCmd && /^\d+$/.test(lx))
+                );
+                if (ok) hideable.push(k);
+            }
+
+            const maxFormBlanks = Math.round(hideable.length * percent / 100);
+            const chosenK = new Set();
+            while (chosenK.size < maxFormBlanks && hideable.length) {
+                chosenK.add(hideable.splice(Math.random() * hideable.length | 0, 1)[0]);
+            }
+
+            // ???????????????? ?????????? ???? ????????????????????????????
+            const formulaObj = { span, delim, slots: [] };
+            const answers = document.createElement('div');
+            answers.className = 'formula-answers';
+            for (let k = 0; k < lex.length; k++) {
+                const lx = lex[k];
+                if (chosenK.has(k)) {
+                    ++counter; hidden[counter] = lx;
+                    const prev = lex[k - 1] || '';
+                    const slot = { type: 'blank', id: counter, value: lx, prevLex: prev };
+                    formulaObj.slots.push(slot);
+                    mathIdToSlot.set(counter, { formula: formulaObj, slot });
+
+                    // ???????????? ?????????????????????? ?????????? ?????????? ?? ????????????????
+                    const lab = document.createElement('label');
+                    lab.innerHTML = `(${counter}) <input class="blank math-blank" data-index="${counter}">`;
+                    answers.appendChild(lab);
+                } else {
+                    formulaObj.slots.push({ type: 'lex', value: lx });
+                }
+            }
+
+            renderFormula(formulaObj);
+            mathFormulas.push(formulaObj);
+            if (answers.children.length) {
+                const row = document.createElement('div');
+                row.className = 'formula-row';
+                row.appendChild(span);
+                row.appendChild(answers);
+                out.appendChild(row);
+            } else {
+                out.appendChild(span);
+            }
+            return;
+        }
+
+        // === ???????????????? ?????????? (???? ??????????????) ===
+        const tStr = tok.value;
+        const { lead, core, trail } = splitWord(tStr);
+        const span = document.createElement('span');
+        span.className = 'word';
+
+        if (chosenAbs.has(i) && core.length > 0) {
+            counter++;
+            hidden[counter] = core;
+
+            if (lead) span.appendChild(document.createTextNode(lead));
+            const inp = document.createElement('input');
+            inp.className = 'blank';
+            inp.dataset.index = String(counter);
+            inp.setAttribute('aria-label', '?????????????? ' + counter);
+            span.appendChild(inp);
+            if (trail) span.appendChild(document.createTextNode(trail));
+        } else {
+            span.textContent = tStr;
+        }
+
+        out.appendChild(span);
+    });
+
+    totalBlanks = counter;
+
+    // Рендер формул після модифікації
+    if (window.MathJax && MathJax.typesetPromise) {
+        MathJax.typesetPromise([out]);
+    }
+
+    // Після генерації текстових/математичних пропусків — згенерувати "дірки" на зображеннях (якщо ввімкнено)
+    autoOccludeAll();
+}
+
+// Перевірка відповідей
+function checkAnswers() {
+    const inputs = document.querySelectorAll('input.blank');
+    let ok = solved.size;
+    const total = totalBlanks || inputs.length;
+    const updatedFormulas = new Set();
+
+    inputs.forEach(inp => {
+        const id = +inp.dataset.index;
+        const val = (inp.value || '').trim();
+        if (val === hidden[id]) {
+            solved.add(id);
+            ok++;
+            const filled = document.createElement('span');
+            filled.className = 'filled';
+            filled.textContent = hidden[id];
+            inp.replaceWith(filled);
+            if (inp.classList.contains('math-blank')) {
+                const slotInfo = mathIdToSlot.get(id);
+                if (slotInfo) updatedFormulas.add(slotInfo.formula);
+            }
+        } else {
+            inp.classList.add('incorrect');
+            inp.classList.remove('correct');
+        }
+    });
+
+    if (updatedFormulas.size) {
+        updatedFormulas.forEach(renderFormula);
+        if (window.MathJax && MathJax.typesetPromise) {
+            MathJax.typesetPromise(Array.from(updatedFormulas, f => f.span));
+        }
+    }
+
+    if (chkAutoStop.checked) pauseTimer();
+    document.getElementById('result').textContent = `Правильно: ${ok}/${total} — Час: ${fmt(tElapsedMs)}`;
+
+    const isFull = total > 0 && ok === total;
+    if (isFull && !solvedFully && !batteryDraining) {
+        batteryCount += 1;
+        updateBatteryUI();
+        pulseBattery();
+    }
+    solvedFully = isFull;
+}
+
+// Завантаження зображень
+document.getElementById('imgInput').addEventListener('change', (e) => {
+    if (!e.target.files?.length) return;
+    addImages([...e.target.files]);
+    e.target.value = ''; // очистити input
+});
+
+// Якщо міняємо "Складність" — і хочемо одразу бачити нову конфігурацію "дір"
+document.getElementById('percent').addEventListener('input', () => {
+    autoOccludeAll();
+});
+// ОКРЕМА складність зображень
+document.getElementById('imgPercent').addEventListener('input', () => {
+    autoOccludeAll();
+});
+// Вкл/викл авто-оклюзії
+document.getElementById('imgAuto').addEventListener('change', () => {
+    autoOccludeAll();
+});
+
+// Події на кнопках
+document.getElementById('btnGen').addEventListener('click', generateCloze);
+document.getElementById('btnCheck').addEventListener('click', checkAnswers);
+
+// Клавіатурні скорочення: Enter = перевірити, Ctrl+G = згенерувати
+document.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault();
+        checkAnswers();
+    } else if ((e.key === 'g' || e.key === 'G') && (e.ctrlKey || e.metaKey)) {
+        e.preventDefault();
+        generateCloze();
+    }
+});
+
+// Додати завантажені зображення у галерею
+async function addImages(files) {
+    for (const f of files) {
+        const url = await toDataURL(f);
+        createFigure(url, f.name.replace(/\.\w+$/, ''));
+    }
+}
+
+// Створити "Рис. N" з контейнером для масок
+function createFigure(url, title = '') {
+    figCounter++;
+    const id = figCounter;
+
+    const wrap = document.createElement('div');
+    wrap.className = 'figure';
+    wrap.dataset.id = id;
+
+    const head = document.createElement('div');
+    head.className = 'fig-head';
+    head.textContent = `Рис. ${id}${title ? `: ${title}` : ''}`;
+
+    const imgBox = document.createElement('div');
+    imgBox.className = 'img-box';
+
+    const img = document.createElement('img');
+    img.src = url;
+    img.alt = title || `Рис. ${id}`;
+
+    imgBox.appendChild(img);
+    wrap.appendChild(head);
+    wrap.appendChild(imgBox);
+    document.getElementById('figures').appendChild(wrap);
+
+    const fig = { id, el: wrap, imgBox, regions: [] };
+    figures.push(fig);
+
+    // У тренуванні: клік по масці показує/ховає її
+    imgBox.addEventListener('click', (e) => {
+        const m = e.target.closest('.mask'); if (!m) return;
+        m.classList.toggle('hidden');
+    });
+
+    // Після завантаження картинки — якщо авто-оклюзія увімкнена, генеруй "дірки"
+    img.addEventListener('load', () => {
+        if (document.getElementById('imgAuto')?.checked) {
+            autoOccludeAll(); // згенерує маски під поточну "Складність"
+        }
+    });
+}
+
+/* ===================== фаза росту масок + авто-оклюзія ===================== */
+
+function applyRectToEl(region) {
+    Object.assign(region.el.style, {
+        left: region.x + 'px',
+        top: region.y + 'px',
+        width: region.w + 'px',
+        height: region.h + 'px'
+    });
+}
+
+function visibleArea(r, W, H) {
+    return clippedArea(r, W, H);
+}
+
+function tryGrow(fig, idx, dir, step, W, H) {
+    const cur = fig.regions[idx];
+    const cand = { x: cur.x, y: cur.y, w: cur.w, h: cur.h };
+
+    if (dir === 'right') cand.w = Math.max(1, cur.w + step);
+    else if (dir === 'bottom') cand.h = Math.max(1, cur.h + step);
+    else return null;
+
+    for (let j = 0; j < fig.regions.length; j++) {
+        if (j === idx) continue;
+        if (rectsOverlapClipped(cand, fig.regions[j], W, H)) return null;
+    }
+
+    const oldVis = visibleArea(cur, W, H);
+    const newVis = visibleArea(cand, W, H);
+    const delta = newVis - oldVis;
+    if (delta <= 0.1) return null;
+
+    return { cand, delta };
+}
+
+function growMasksToTarget(fig, target, W, H, maxIters = 1500) {
+    let covered = fig.regions.reduce((s, r) => s + visibleArea(r, W, H), 0);
+    const stepBase = Math.max(2, Math.round(Math.min(W, H) / 80));
+
+    let it = 0;
+    while (covered < target && it++ < maxIters) {
+        let best = null;
+
+        for (let i = 0; i < fig.regions.length; i++) {
+            const c1 = tryGrow(fig, i, 'right', stepBase, W, H);
+            const c2 = tryGrow(fig, i, 'bottom', stepBase, W, H);
+
+            if (c1 && (!best || c1.delta > best.delta)) best = { i, dir: 'right', ...c1 };
+            if (c2 && (!best || c2.delta > best.delta)) best = { i, dir: 'bottom', ...c2 };
+        }
+
+        if (!best) break;
+
+        const r = fig.regions[best.i];
+        r.x = best.cand.x; r.y = best.cand.y; r.w = best.cand.w; r.h = best.cand.h;
+        applyRectToEl(r);
+        covered += best.delta;
+
+        if (target - covered < Math.max(20, 0.002 * W * H)) break;
+    }
+}
+
+function autoOccludeAll() {
+    const auto = document.getElementById('imgAuto')?.checked;
+    if (!auto) return;
+
+    const debug = !!document.getElementById('debugLog')?.checked;
+
+    // НОВЕ: беремо окремий відсоток для зображень, інакше — з текстового контролу.
+    let dImg = +document.getElementById('imgPercent')?.value;
+    if (Number.isNaN(dImg)) dImg = +document.getElementById('percent').value || 0;
+    const d = Math.min(100, Math.max(0, dImg)) / 100; // 0..1
+
+    const targetFrac = 0.8 * d;                    // максимум 80% при 100% складності
+    const MAX_MASKS = Math.min(6, Math.max(1, Math.ceil(1 + d * 5))); // 1..6
+    const overspill = 0.35;
+    const eps = 0.02;
+
+    figures.forEach(fig => {
+        fig.regions.forEach(r => r.el.remove());
+        fig.regions = [];
+
+        const box = fig.imgBox;
+        const W = box.clientWidth, H = box.clientHeight;
+        if (W < 20 || H < 20) return;
+
+        const A = W * H;
+        const target = A * targetFrac;
+
+        let covered = 0, placed = 0;
+
+        // Фаза 1
+        while (covered < target * (1 - eps) && placed < MAX_MASKS) {
+            const remain = Math.max(1, target - covered);
+            const left = MAX_MASKS - placed;
+
+            const minVis = A * 0.10 * Math.max(0.2, d);
+            const maxVis = A * 0.92;
+            const desiredVisible = Math.min(
+                maxVis,
+                Math.max(minVis, remain / left * (0.95 + Math.random() * 0.1))
+            );
+
+            const rect = placeRectWithOverspill(fig, desiredVisible, W, H, overspill, 360);
+            if (!rect) {
+                const fallback = placeRectWithOverspill(fig, Math.max(A * 0.05, desiredVisible * 0.7), W, H, overspill, 260);
+                if (!fallback) break;
+                addMask(fig, fallback); covered += fallback.visible; placed++; continue;
+            }
+            addMask(fig, rect); covered += rect.visible; placed++;
+        }
+
+        // Фаза 2
+        if (covered < target * (1 - eps) && fig.regions.length) {
+            growMasksToTarget(fig, target, W, H);
+            covered = fig.regions.reduce((s, r) => s + clippedArea(r, W, H), 0);
+        }
+
+        const pct = Math.round((covered / A) * 1000) / 10;
+        const goal = Math.round(targetFrac * 1000) / 10;
+        if (debug) console.log(`Рис.${fig.id}: покрито ${pct}% (ціль ${goal}%), масок ${fig.regions.length}/${MAX_MASKS}`);
+    });
+
+    function addMask(fig, { x, y, w, h }) {
+        const el = document.createElement('div');
+        el.className = 'mask hidden';
+        Object.assign(el.style, { left: x + 'px', top: y + 'px', width: w + 'px', height: h + 'px' });
+        const key = fig.id + String.fromCharCode(65 + fig.regions.length); // 1A, 1B, ...
+        el.innerHTML = `<span class="label">${key}</span>`;
+        fig.imgBox.appendChild(el);
+        fig.regions.push({ key, x, y, w, h, el, hidden: true });
+    }
+}
+/* =================== КІНЕЦЬ БЛОКУ =================== */
