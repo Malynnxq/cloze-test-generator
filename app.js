@@ -50,98 +50,11 @@ btnStartPause.addEventListener('click', () => {
 btnReset.addEventListener('click', resetTimer);
 updateDisplay();
 
-// ====== БАТАРЕЯ МАЙСТЕРНОСТІ ======
-const batteryPanel = document.getElementById('batteryPanel');
-const batteryTargetInput = document.getElementById('batteryTarget');
-const batteryShell = document.getElementById('batteryShell');
-const batteryLiquid = document.getElementById('batteryLiquid');
-const batteryStatus = document.getElementById('batteryStatus');
-
-let batteryCount = 0;
-let batteryDraining = false;
-const batteryDrainMs = 5 * 60 * 1000;
-
-function getBatteryTarget() {
-    const v = parseInt(batteryTargetInput.value, 10);
-    return Number.isFinite(v) && v > 0 ? v : 1;
-}
-
-function setBatteryFill(level) {
-    const clamped = Math.max(0, Math.min(1, level));
-    batteryLiquid.style.height = `${clamped * 100}%`;
-    batteryShell.style.setProperty('--battery-wave', `${clamped * 100}%`);
-    batteryShell.style.setProperty('--battery-level', clamped.toString());
-}
-
-function updateBatteryUI() {
-    const target = getBatteryTarget();
-    if (batteryCount > target) batteryCount = target;
-    const level = target > 0 ? batteryCount / target : 0;
-    setBatteryFill(level);
-    batteryStatus.textContent = `Повних серій: ${batteryCount}/${target}`;
-
-    const full = level >= 1;
-    batteryPanel.classList.toggle('is-full', full);
-    if (!full && !batteryDraining) {
-        batteryPanel.classList.remove('is-draining');
-    }
-}
-
-function pulseBattery() {
-    batteryPanel.classList.add('is-filling');
-    setTimeout(() => {
-        batteryPanel.classList.remove('is-filling');
-    }, 700);
-}
-
-function startBatteryDrain() {
-    if (batteryDraining) return;
-    batteryDraining = true;
-    batteryPanel.classList.add('is-draining');
-    batteryPanel.classList.remove('is-filling');
-    batteryTargetInput.disabled = true;
-    const start = performance.now();
-    const tickDrain = (now) => {
-        const t = (now - start) / batteryDrainMs;
-        const level = 1 - t;
-        setBatteryFill(level);
-        if (t < 1) {
-            requestAnimationFrame(tickDrain);
-        } else {
-            batteryDraining = false;
-            batteryCount = 0;
-            batteryPanel.classList.remove('is-full');
-            batteryPanel.classList.remove('is-draining');
-            batteryTargetInput.disabled = false;
-            updateBatteryUI();
-        }
-    };
-    requestAnimationFrame(tickDrain);
-}
-
-batteryTargetInput.addEventListener('input', () => {
-    updateBatteryUI();
-});
-
-batteryShell.addEventListener('click', () => {
-    if (batteryPanel.classList.contains('is-full')) startBatteryDrain();
-});
-
-batteryShell.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter' || e.key === ' ') {
-        e.preventDefault();
-        if (batteryPanel.classList.contains('is-full')) startBatteryDrain();
-    }
-});
-
-updateBatteryUI();
-
 // ===== СТАН (те, що зберігаємо між натисканнями) ======================
 let hidden = {};     // id -> правильне слово/лексема
 let counter = 0;     // лічильник пропусків
 let solved = new Set();
 let totalBlanks = 0;
-let solvedFully = false;
 let mathFormulas = [];
 let mathIdToSlot = new Map();
 
@@ -389,7 +302,6 @@ function generateCloze() {
     counter = 0;
     solved = new Set();
     totalBlanks = 0;
-    solvedFully = false;
     mathFormulas = [];
     mathIdToSlot = new Map();
 
@@ -641,14 +553,6 @@ function checkAnswers() {
 
     if (chkAutoStop.checked) pauseTimer();
     document.getElementById('result').textContent = `Правильно: ${ok}/${total} — Час: ${fmt(tElapsedMs)}`;
-
-    const isFull = total > 0 && ok === total;
-    if (isFull && !solvedFully && !batteryDraining) {
-        batteryCount += 1;
-        updateBatteryUI();
-        pulseBattery();
-    }
-    solvedFully = isFull;
 }
 
 // Завантаження зображень
