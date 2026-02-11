@@ -4,11 +4,24 @@ const btnStartPause = document.getElementById('timerStartPause');
 const btnReset = document.getElementById('timerReset');
 const chkAutoStart = document.getElementById('autoStart');
 const chkAutoStop = document.getElementById('autoStop');
+const chkSpeedMode = document.getElementById('speedMode');
+const speedPanel = document.getElementById('speedPanel');
+const speedMinutesInput = document.getElementById('speedMinutes');
+const speedStatus = document.getElementById('speedStatus');
 
 let tRunning = false;
 let tElapsedMs = 0;
 let tLast = 0;
 let tHandle = null;
+const speedState = {
+    running: false,
+    blanks: [],
+    activeIndex: -1,
+    perBlankMs: 0,
+    carryMs: 0,
+    deadline: 0,
+    tickHandle: null
+};
 
 function fmt(ms) {
     const totalSec = Math.floor(ms / 1000);
@@ -49,6 +62,178 @@ btnStartPause.addEventListener('click', () => {
 });
 btnReset.addEventListener('click', resetTimer);
 updateDisplay();
+
+function fmtSecs(ms) {
+    return `${(Math.max(0, ms) / 1000).toFixed(1)} с`;
+}
+
+function setSpeedStatus(text) {
+    if (!speedStatus) return;
+    speedStatus.textContent = text || '';
+}
+
+function refreshSpeedPanel() {
+    if (!speedPanel || !chkSpeedMode) return;
+    speedPanel.hidden = !chkSpeedMode.checked;
+}
+
+function clearSpeedTick() {
+    if (!speedState.tickHandle) return;
+    clearInterval(speedState.tickHandle);
+    speedState.tickHandle = null;
+}
+
+function clearSpeedHighlight() {
+    document.querySelectorAll('input.blank.speed-active').forEach((el) => {
+        el.classList.remove('speed-active');
+    });
+}
+
+function rerenderUpdatedFormulas(updatedFormulas) {
+    if (!updatedFormulas || !updatedFormulas.size) return;
+    updatedFormulas.forEach(renderFormula);
+    if (window.MathJax && MathJax.typesetPromise) {
+        MathJax.typesetPromise(Array.from(updatedFormulas, (f) => f.span));
+    }
+}
+
+function fillBlankWithAnswer(inp, id, updatedFormulas = null) {
+    if (!inp || !inp.isConnected) return;
+    solved.add(id);
+    const filled = document.createElement('span');
+    filled.className = 'filled';
+    filled.textContent = hidden[id];
+    inp.replaceWith(filled);
+    if (updatedFormulas && inp.classList.contains('math-blank')) {
+        const slotInfo = mathIdToSlot.get(id);
+        if (slotInfo) updatedFormulas.add(slotInfo.formula);
+    }
+}
+
+function stopSpeedMode(resetStatus = true) {
+    clearSpeedTick();
+    clearSpeedHighlight();
+    speedState.running = false;
+    speedState.blanks = [];
+    speedState.activeIndex = -1;
+    speedState.perBlankMs = 0;
+    speedState.carryMs = 0;
+    speedState.deadline = 0;
+    if (resetStatus) setSpeedStatus('');
+}
+
+function findNextSpeedIndex(startIdx) {
+    for (let i = startIdx; i < speedState.blanks.length; i++) {
+        const inp = speedState.blanks[i];
+        if (inp && inp.isConnected) return i;
+    }
+    return -1;
+}
+
+function focusSpeedInput(inp) {
+    if (!inp || !inp.isConnected) return;
+    inp.focus();
+    inp.select?.();
+}
+
+function finishSpeedMode() {
+    clearSpeedTick();
+    clearSpeedHighlight();
+    speedState.running = false;
+    speedState.activeIndex = -1;
+    setSpeedStatus('Режим на швидкість завершено.');
+    checkAnswers();
+}
+
+function beginSpeedStep() {
+    if (!speedState.running) return;
+    const idx = findNextSpeedIndex(Math.max(0, speedState.activeIndex));
+    if (idx === -1) {
+        finishSpeedMode();
+        return;
+    }
+
+    speedState.activeIndex = idx;
+    const inp = speedState.blanks[idx];
+    const slotMs = Math.max(400, speedState.perBlankMs + speedState.carryMs);
+    speedState.carryMs = 0;
+    speedState.deadline = performance.now() + slotMs;
+
+    clearSpeedHighlight();
+    inp.classList.remove('incorrect');
+    inp.classList.add('speed-active');
+    focusSpeedInput(inp);
+
+    const tick = () => {
+        if (!speedState.running) return;
+        const leftMs = speedState.deadline - performance.now();
+        if (leftMs <= 0) {
+            clearSpeedTick();
+            const updatedFormulas = new Set();
+            const id = Number(inp.dataset.index);
+            fillBlankWithAnswer(inp, id, updatedFormulas);
+            rerenderUpdatedFormulas(updatedFormulas);
+            speedState.activeIndex += 1;
+            beginSpeedStep();
+            return;
+        }
+        setSpeedStatus(`На швидкість: ${idx + 1}/${speedState.blanks.length} • залишилось ${fmtSecs(leftMs)}`);
+    };
+
+    tick();
+    clearSpeedTick();
+    speedState.tickHandle = setInterval(tick, 100);
+}
+
+function submitSpeedBlank() {
+    if (!speedState.running) return;
+    const inp = speedState.blanks[speedState.activeIndex];
+    if (!inp || !inp.isConnected) {
+        speedState.activeIndex += 1;
+        beginSpeedStep();
+        return;
+    }
+
+    const id = Number(inp.dataset.index);
+    const val = (inp.value || '').trim();
+    if (val !== hidden[id]) {
+        inp.classList.add('incorrect');
+        return;
+    }
+
+    const carry = Math.max(0, speedState.deadline - performance.now());
+    const updatedFormulas = new Set();
+    fillBlankWithAnswer(inp, id, updatedFormulas);
+    rerenderUpdatedFormulas(updatedFormulas);
+    speedState.carryMs = carry;
+    speedState.activeIndex += 1;
+    beginSpeedStep();
+}
+
+function startSpeedMode() {
+    stopSpeedMode(false);
+    if (!chkSpeedMode?.checked) return;
+
+    const minutes = Number(speedMinutesInput?.value);
+    const blanks = Array.from(document.querySelectorAll('input.blank'));
+    if (!Number.isFinite(minutes) || minutes <= 0) {
+        setSpeedStatus('Вкажіть коректну кількість хвилин (> 0).');
+        return;
+    }
+    if (!blanks.length) {
+        setSpeedStatus('Немає пропусків для режиму на швидкість.');
+        return;
+    }
+
+    speedState.running = true;
+    speedState.blanks = blanks;
+    speedState.activeIndex = 0;
+    speedState.perBlankMs = (minutes * 60 * 1000) / blanks.length;
+    speedState.carryMs = 0;
+    beginSpeedStep();
+}
+
+refreshSpeedPanel();
 
 // ===== СТАН (те, що зберігаємо між натисканнями) ======================
 let hidden = {};     // id -> правильне слово/лексема
@@ -291,6 +476,7 @@ function generateCloze() {
     const mathOn = !!document.getElementById('processMath')?.checked;
     const noHideCmds = !!document.getElementById('noHideMathCommands')?.checked;
     const ignorePunctuation = !!document.getElementById('ignorePunctuation')?.checked;
+    stopSpeedMode();
 
     // Таймер: авто-старт, скидання часу
     if (chkAutoStart.checked) { resetTimer(); startTimer(); }
@@ -515,10 +701,12 @@ function generateCloze() {
 
     // Після генерації текстових/математичних пропусків — згенерувати "дірки" на зображеннях (якщо ввімкнено)
     autoOccludeAll();
+    if (chkSpeedMode?.checked) startSpeedMode();
 }
 
 // Перевірка відповідей
 function checkAnswers() {
+    if (speedState.running) stopSpeedMode(false);
     const inputs = document.querySelectorAll('input.blank');
     let ok = solved.size;
     const total = totalBlanks || inputs.length;
@@ -528,28 +716,15 @@ function checkAnswers() {
         const id = +inp.dataset.index;
         const val = (inp.value || '').trim();
         if (val === hidden[id]) {
-            solved.add(id);
             ok++;
-            const filled = document.createElement('span');
-            filled.className = 'filled';
-            filled.textContent = hidden[id];
-            inp.replaceWith(filled);
-            if (inp.classList.contains('math-blank')) {
-                const slotInfo = mathIdToSlot.get(id);
-                if (slotInfo) updatedFormulas.add(slotInfo.formula);
-            }
+            fillBlankWithAnswer(inp, id, updatedFormulas);
         } else {
             inp.classList.add('incorrect');
             inp.classList.remove('correct');
         }
     });
 
-    if (updatedFormulas.size) {
-        updatedFormulas.forEach(renderFormula);
-        if (window.MathJax && MathJax.typesetPromise) {
-            MathJax.typesetPromise(Array.from(updatedFormulas, f => f.span));
-        }
-    }
+    rerenderUpdatedFormulas(updatedFormulas);
 
     if (chkAutoStop.checked) pauseTimer();
     document.getElementById('result').textContent = `Правильно: ${ok}/${total} — Час: ${fmt(tElapsedMs)}`;
@@ -578,11 +753,27 @@ document.getElementById('imgAuto').addEventListener('change', () => {
 // Події на кнопках
 document.getElementById('btnGen').addEventListener('click', generateCloze);
 document.getElementById('btnCheck').addEventListener('click', checkAnswers);
+chkSpeedMode?.addEventListener('change', () => {
+    refreshSpeedPanel();
+    if (!chkSpeedMode.checked) {
+        stopSpeedMode();
+        return;
+    }
+    if (document.querySelector('input.blank')) startSpeedMode();
+    else setSpeedStatus('Режим увімкнено. Натисніть "Створити пропуски".');
+});
+speedMinutesInput?.addEventListener('change', () => {
+    if (speedState.running) startSpeedMode();
+});
 
 // Клавіатурні скорочення: Enter = перевірити, Ctrl+G = згенерувати
 document.addEventListener('keydown', (e) => {
     if (e.key === 'Enter' && !e.shiftKey) {
         e.preventDefault();
+        if (speedState.running) {
+            submitSpeedBlank();
+            return;
+        }
         checkAnswers();
     } else if ((e.key === 'g' || e.key === 'G') && (e.ctrlKey || e.metaKey)) {
         e.preventDefault();

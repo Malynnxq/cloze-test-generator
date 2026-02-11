@@ -379,6 +379,36 @@ button:disabled {
     padding: 0.45rem 0.95rem;
 }
 
+#speedPanel {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.7rem 1rem;
+    width: 100%;
+    padding: 0.7rem 0.8rem;
+    border: 1px solid rgba(124, 255, 107, 0.35);
+    border-radius: 0.75rem;
+    background: rgba(124, 255, 107, 0.08);
+}
+
+#speedPanel[hidden] {
+    display: none;
+}
+
+#speedMinutes {
+    width: 90px;
+}
+
+#speedStatus {
+    color: var(--accent-2);
+    font-weight: 700;
+}
+
+.blank.speed-active {
+    border-color: var(--accent-2);
+    box-shadow: 0 0 0 2px rgba(124, 255, 107, 0.22), 0 0 16px rgba(124, 255, 107, 0.32);
+}
+
 #mathInputs label {
     display: inline-flex;
     align-items: center;
