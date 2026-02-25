@@ -412,6 +412,525 @@ function tokenizeWithMarkdown(raw) {
     return out;
 }
 
+const TIKZ_FENCED_BLOCK_RE = /^```[ \t]*tikz[^\r\n]*\r?\n([\s\S]*?)\r?\n```[ \t]*$/i;
+const TIKZ_ENV_BLOCK_RE = /^\\begin\{tikz[^}]*\}[\s\S]*\\end\{tikz[^}]*\}$/;
+const TIKZ_ANY_ENV_RE = /\\begin\{(tikzpicture|tikzcd|circuitikz)\}/i;
+const TEX_DOCUMENT_RE = /\\begin\{document\}/i;
+const TEX_DOCUMENT_BLOCK_RE = /\\begin\{document\}([\s\S]*?)\\end\{document\}/i;
+const USE_TIKZ_LIBRARY_RE = /\\usetikzlibrary\{([^}]+)\}/g;
+const USE_PACKAGE_RE = /\\usepackage(?:\[(.*?)\])?\{([^}]+)\}/g;
+const ROD2IK_TIKZJAX_URL = 'https://cdn.jsdelivr.net/npm/@rod2ik/tikzjax@1.0.0-beta32/dist/tikzjax.js';
+const ROD2IK_FONTS_URL = 'https://cdn.jsdelivr.net/npm/@rod2ik/tikzjax@1.0.0-beta32/dist/fonts.css';
+const TIKZ_ENGINE_LOAD_TIMEOUT_MS = 12000;
+const TIKZ_STUCK_LOADER_TIMEOUT_MS = 10000;
+const TIKZ_MAX_TOTAL_WAIT_MS = 30000;
+let rod2ikTikzjaxLoadPromise = null;
+
+function normalizeTikzSource(source) {
+    let trimmed = String(source || '').trim();
+    if (!trimmed) return trimmed;
+
+    // This TikZ engine wraps input into \begin{document}...\end{document} itself.
+    // Strip user-provided document wrapper to avoid nested document environments.
+    const docMatch = trimmed.match(TEX_DOCUMENT_BLOCK_RE);
+    if (docMatch) {
+        trimmed = (docMatch[1] || '').trim();
+    } else if (TEX_DOCUMENT_RE.test(trimmed)) {
+        trimmed = trimmed
+            .replace(/\\begin\{document\}/gi, '')
+            .replace(/\\end\{document\}/gi, '')
+            .trim();
+    }
+
+    if (TIKZ_ANY_ENV_RE.test(trimmed)) return trimmed;
+    return `\\begin{tikzpicture}\n${trimmed}\n\\end{tikzpicture}`;
+}
+
+function extractTikzSource(blockText) {
+    if (typeof blockText !== 'string') return null;
+    const trimmed = blockText.trim();
+    if (!trimmed) return null;
+
+    const fenced = trimmed.match(TIKZ_FENCED_BLOCK_RE);
+    if (fenced) return normalizeTikzSource(fenced[1]);
+    if (TIKZ_ENV_BLOCK_RE.test(trimmed)) return normalizeTikzSource(trimmed);
+    return null;
+}
+
+function parseCsv(value) {
+    return String(value || '')
+        .split(',')
+        .map((s) => s.trim())
+        .filter(Boolean);
+}
+
+function getActiveTikzEngine() {
+    if (window.TikzJax) return 'rod2ik';
+    if (typeof window.TikZJax === 'function') return 'official';
+    return 'none';
+}
+
+function ensureRod2ikTikzJaxLoaded() {
+    if (window.TikzJax) return Promise.resolve(true);
+    if (rod2ikTikzjaxLoadPromise) return rod2ikTikzjaxLoadPromise;
+
+    rod2ikTikzjaxLoadPromise = new Promise((resolve, reject) => {
+        let settled = false;
+        const finish = (fn, value) => {
+            if (settled) return;
+            settled = true;
+            clearTimeout(timeoutId);
+            fn(value);
+        };
+        const timeoutId = setTimeout(() => {
+            finish(reject, new Error('Timed out while loading Rod2ik TikZJax.'));
+        }, TIKZ_ENGINE_LOAD_TIMEOUT_MS);
+
+        if (!document.querySelector(`link[href="${ROD2IK_FONTS_URL}"]`)) {
+            const link = document.createElement('link');
+            link.rel = 'stylesheet';
+            link.href = ROD2IK_FONTS_URL;
+            document.head.appendChild(link);
+        }
+
+        const existing = document.querySelector(`script[src="${ROD2IK_TIKZJAX_URL}"]`);
+        const onReady = () => {
+            if (window.TikzJax) finish(resolve, true);
+            else finish(reject, new Error('Rod2ik TikZJax failed to initialize.'));
+        };
+        if (existing) {
+            if (window.TikzJax) {
+                finish(resolve, true);
+                return;
+            }
+            existing.addEventListener('load', onReady, { once: true });
+            existing.addEventListener('error', () => finish(reject, new Error('Failed to load Rod2ik TikZJax.')), { once: true });
+            return;
+        }
+
+        const script = document.createElement('script');
+        script.src = ROD2IK_TIKZJAX_URL;
+        script.async = true;
+        script.onload = onReady;
+        script.onerror = () => finish(reject, new Error('Failed to load Rod2ik TikZJax.'));
+        document.head.appendChild(script);
+    }).catch((err) => {
+        rod2ikTikzjaxLoadPromise = null;
+        throw err;
+    });
+
+    return rod2ikTikzjaxLoadPromise;
+}
+
+function extractScriptOptions(source) {
+    USE_TIKZ_LIBRARY_RE.lastIndex = 0;
+    USE_PACKAGE_RE.lastIndex = 0;
+
+    const libs = new Set();
+    const packages = {};
+    let match;
+
+    while ((match = USE_TIKZ_LIBRARY_RE.exec(source)) !== null) {
+        parseCsv(match[1]).forEach((lib) => libs.add(lib));
+    }
+    USE_TIKZ_LIBRARY_RE.lastIndex = 0;
+
+    while ((match = USE_PACKAGE_RE.exec(source)) !== null) {
+        const options = (match[1] || '').trim();
+        parseCsv(match[2]).forEach((pkg) => {
+            if (!(pkg in packages)) packages[pkg] = options;
+        });
+    }
+    USE_PACKAGE_RE.lastIndex = 0;
+
+    // Auto-enable commonly needed packages/libraries if their environments appear.
+    if (/>=\s*stealth\b/i.test(source) && !libs.has('arrows.meta')) libs.add('arrows.meta');
+    if (/\\begin\{axis\}|\\addplot/i.test(source) && !('pgfplots' in packages)) packages.pgfplots = '';
+    if (/\\begin\{tikzcd\}/i.test(source) && !('tikz-cd' in packages)) packages['tikz-cd'] = '';
+    if (/\\begin\{circuitikz\}/i.test(source) && !('circuitikz' in packages)) packages.circuitikz = '';
+    if (/\\chemfig|\\schemestart/i.test(source) && !('chemfig' in packages)) packages.chemfig = '';
+
+    return {
+        source: source
+            .replace(USE_TIKZ_LIBRARY_RE, '')
+            .replace(USE_PACKAGE_RE, '')
+            .trim(),
+        tikzLibraries: Array.from(libs),
+        texPackages: packages
+    };
+}
+
+function sanitizeTikzSourceForRetry(source) {
+    return String(source || '')
+        .split(/\r?\n/)
+        .map((line) => line.replace(/%.*$/, ''))
+        .join('\n')
+        .replace(/>=\s*stealth\b/gi, '>=Stealth')
+        .replace(/[ \t]+\n/g, '\n')
+        .trim();
+}
+
+function buildTikzRetryVariants(source) {
+    const base = String(source || '').trim();
+    if (!base) return [];
+
+    const variants = [];
+    const pushUnique = (s) => {
+        const v = String(s || '').trim();
+        if (!v) return;
+        if (!variants.includes(v)) variants.push(v);
+    };
+
+    const sanitized = sanitizeTikzSourceForRetry(base);
+    pushUnique(base);
+    pushUnique(sanitized);
+    // Drop >=... arrow tip key if engine doesn't support the selected style.
+    pushUnique(sanitized.replace(/>=\s*[^,\]\r\n]+,?\s*/gi, ''));
+    // Drop tikzpicture options entirely as last visual-degradation fallback.
+    pushUnique(sanitized.replace(/(\\begin\{tikzpicture\})\[[^\]]*\]/i, '$1'));
+
+    return variants;
+}
+
+function createTikzScriptElement(source) {
+    const engine = getActiveTikzEngine();
+    const script = document.createElement('script');
+    script.type = 'text/tikz';
+    script.dataset.showConsole = 'true';
+    if (engine === 'rod2ik') {
+        const options = extractScriptOptions(source);
+        const finalSource = options.source || source;
+        script.textContent = finalSource;
+        if (options.tikzLibraries.length) {
+            script.dataset.tikzLibraries = options.tikzLibraries.join(',');
+        }
+        if (Object.keys(options.texPackages).length) {
+            script.dataset.texPackages = JSON.stringify(options.texPackages);
+        }
+        return { script, finalSource };
+    }
+    script.textContent = source;
+    return { script, finalSource: source };
+}
+
+function isLikelyBrokenTikzImage(img) {
+    if (!img) return false;
+    const src = String(img.getAttribute('src') || '');
+    if (/invalid\.site/i.test(src)) return true;
+    return img.complete && img.naturalWidth === 0;
+}
+
+function ensureTikzLoadingState(block) {
+    if (!block) return;
+    const now = Date.now();
+    block.classList.add('tikz-pending');
+    block.classList.remove('tikz-ready');
+    if (!block.dataset.tikzLoadStartedAt) {
+        block.dataset.tikzLoadStartedAt = String(now);
+    }
+    if (!block.dataset.tikzFirstLoadStartedAt) {
+        block.dataset.tikzFirstLoadStartedAt = String(now);
+    }
+    let loader = block.querySelector('.tikz-loading');
+    if (!loader) {
+        loader = document.createElement('div');
+        loader.className = 'tikz-loading';
+        loader.textContent = 'TikZ: рендеринг...';
+        block.prepend(loader);
+    }
+}
+
+function setTikzReadyState(block) {
+    if (!block) return;
+    block.classList.remove('tikz-pending');
+    block.classList.add('tikz-ready');
+    delete block.dataset.tikzLoadStartedAt;
+    delete block.dataset.tikzFirstLoadStartedAt;
+    block.querySelectorAll('.tikz-loading').forEach((el) => el.remove());
+}
+
+function isLikelyTikzLoaderSvg(svg) {
+    if (!svg || svg.tagName?.toLowerCase() !== 'svg') return false;
+    if (svg.classList.contains('tikzjax') || svg.classList.contains('tikz')) return false;
+    if (svg.querySelector('animate')) return true;
+    const width = String(svg.getAttribute('width') || '');
+    const height = String(svg.getAttribute('height') || '');
+    return /75pt/i.test(width) && /75pt/i.test(height);
+}
+
+function decodeDataSvgPayload(src) {
+    if (!/^data:image\/svg\+xml/i.test(src)) return '';
+    const commaIdx = src.indexOf(',');
+    if (commaIdx < 0) return '';
+    const meta = src.slice(0, commaIdx);
+    const payload = src.slice(commaIdx + 1);
+    try {
+        if (/;base64/i.test(meta)) return atob(payload);
+        return decodeURIComponent(payload);
+    } catch {
+        return '';
+    }
+}
+
+function isLikelyTikzLoaderImg(img) {
+    if (!img || img.tagName?.toLowerCase() !== 'img') return false;
+    const src = String(img.getAttribute('src') || img.src || '');
+    if (!src) return false;
+
+    const inlineSvg = decodeDataSvgPayload(src);
+    const haystack = `${src}\n${inlineSvg}`;
+    if (!/^data:image\/svg\+xml/i.test(src) && !inlineSvg) return false;
+
+    const hasSpinnerMarkers = /animate(?:Transform)?|stroke-dasharray|stroke-dashoffset/i.test(haystack);
+    if (!hasSpinnerMarkers) return false;
+    if (/viewbox=["']?0 0 75 75|75pt/i.test(haystack)) return true;
+
+    const w = Number(img.naturalWidth || img.width || 0);
+    const h = Number(img.naturalHeight || img.height || 0);
+    return w > 0 && h > 0 && w <= 90 && h <= 90;
+}
+
+function refreshTikzBlockStates(root) {
+    if (!root || !root.querySelectorAll) return;
+    root.querySelectorAll('.tikz-block').forEach((block) => {
+        const hasScript = !!block.querySelector('script[type="text/tikz"]');
+        const svg = block.querySelector('svg');
+        const img = block.querySelector('img');
+        const hasLoaderSvg = isLikelyTikzLoaderSvg(svg);
+        const hasLoaderImg = isLikelyTikzLoaderImg(img);
+        const hasFinalRender = !!block.querySelector('svg.tikz, svg.tikzjax') || (!!img && !hasLoaderImg);
+        if (hasScript || hasLoaderSvg || hasLoaderImg) {
+            ensureTikzLoadingState(block);
+            return;
+        }
+        if (!hasScript && hasFinalRender) {
+            setTikzReadyState(block);
+        }
+    });
+}
+
+function getTikzRetryVariants(block) {
+    let variants = [];
+    try {
+        variants = JSON.parse(block.dataset.tikzVariants || '[]');
+    } catch {
+        variants = [];
+    }
+    if (!variants.length) {
+        const original = block.dataset.tikzOriginal || block.dataset.tikzSource || '';
+        variants = buildTikzRetryVariants(original);
+        block.dataset.tikzVariants = JSON.stringify(variants);
+    }
+    return variants;
+}
+
+function retryTikzBlockWithNextVariant(block, root) {
+    const variants = getTikzRetryVariants(block);
+    const idx = Number(block.dataset.tikzRetryIndex || '0');
+    if (idx + 1 >= variants.length) return false;
+    const retrySource = variants[idx + 1];
+    if (!retrySource) return false;
+
+    block.dataset.tikzRetryIndex = String(idx + 1);
+    const { script, finalSource } = createTikzScriptElement(retrySource);
+    block.dataset.tikzSource = finalSource;
+    block.replaceChildren(script);
+    block.dataset.errorShown = '0';
+    block.dataset.tikzLoadStartedAt = String(Date.now());
+    ensureTikzLoadingState(block);
+    setTimeout(() => renderTikzBlocks(root), 50);
+    return true;
+}
+
+function showTikzBlockError(block, message) {
+    if (!block || block.dataset.errorShown === '1') return;
+    block.dataset.errorShown = '1';
+    block.classList.remove('tikz-pending', 'tikz-ready');
+    delete block.dataset.tikzLoadStartedAt;
+    delete block.dataset.tikzFirstLoadStartedAt;
+
+    const msg = document.createElement('div');
+    msg.className = 'tikz-error';
+    msg.textContent = message || 'TikZ compile failed after all retries. Check syntax in this block.';
+    block.replaceChildren(msg);
+
+    const src = block.dataset.tikzOriginal || block.dataset.tikzSource || '';
+    if (!src) return;
+    const pre = document.createElement('pre');
+    pre.className = 'tikz-source';
+    pre.textContent = src;
+    block.appendChild(pre);
+}
+
+function replaceTikzErrorImages(root) {
+    if (!root || !root.querySelectorAll) return;
+
+    root.querySelectorAll('.tikz-block img').forEach((img) => {
+        if (!isLikelyBrokenTikzImage(img)) return;
+        const block = img.closest('.tikz-block');
+        if (!block) return;
+        if (retryTikzBlockWithNextVariant(block, root)) return;
+        showTikzBlockError(block, 'TikZ compile failed after all retries. Check syntax in this block.');
+    });
+}
+
+function replaceStuckTikzLoaders(root, timeoutMs = 10000) {
+    if (!root || !root.querySelectorAll) return;
+    const now = Date.now();
+    root.querySelectorAll('.tikz-block').forEach((block) => {
+        const svg = block.querySelector('svg');
+        const img = block.querySelector('img');
+        const hasLoader = isLikelyTikzLoaderSvg(svg) || isLikelyTikzLoaderImg(img);
+        if (!hasLoader) return;
+        const started = Number(block.dataset.tikzLoadStartedAt || '0');
+        const firstStarted = Number(block.dataset.tikzFirstLoadStartedAt || started || '0');
+        if (!started) {
+            block.dataset.tikzLoadStartedAt = String(now);
+            if (!block.dataset.tikzFirstLoadStartedAt) block.dataset.tikzFirstLoadStartedAt = String(now);
+            return;
+        }
+        if (firstStarted && now - firstStarted >= TIKZ_MAX_TOTAL_WAIT_MS) {
+            showTikzBlockError(block, 'TikZ rendering timed out. Check syntax in this block.');
+            return;
+        }
+        if (now - started < timeoutMs) return;
+        if (retryTikzBlockWithNextVariant(block, root)) return;
+        showTikzBlockError(block, 'TikZ rendering timed out. Check syntax in this block.');
+    });
+}
+
+function scheduleTikzErrorChecks(root, checksLeft = 40) {
+    if (!root || !root.querySelector) return;
+    refreshTikzBlockStates(root);
+    replaceTikzErrorImages(root);
+    replaceStuckTikzLoaders(root, TIKZ_STUCK_LOADER_TIMEOUT_MS);
+    if (checksLeft <= 0) return;
+    setTimeout(() => scheduleTikzErrorChecks(root, checksLeft - 1), 500);
+}
+
+function replaceUnprocessedTikzScripts(root, message = 'TikZ compile failed after all retries. Check syntax in this block.') {
+    if (!root || !root.querySelectorAll) return;
+    root.querySelectorAll('script[type="text/tikz"]').forEach((script) => {
+        const src = String(script.textContent || '').trim();
+        const hostBlock = script.closest('.tikz-block');
+        if (hostBlock) {
+            hostBlock.dataset.tikzSource = src;
+            showTikzBlockError(hostBlock, message);
+            return;
+        }
+
+        const wrapper = document.createElement('div');
+        wrapper.className = 'tikz-block';
+        wrapper.dataset.tikzSource = src;
+        wrapper.dataset.tikzOriginal = src;
+        wrapper.dataset.errorShown = '0';
+        showTikzBlockError(wrapper, message);
+        script.replaceWith(wrapper);
+    });
+}
+
+function armPendingTikzScriptWatch(root, delayMs = 7000) {
+    if (!root || !root.querySelector) return;
+    if (root.dataset.tikzPendingWatch === '1') return;
+    root.dataset.tikzPendingWatch = '1';
+    setTimeout(() => {
+        root.dataset.tikzPendingWatch = '0';
+        if (!root.isConnected) return;
+        if (!root.querySelector('script[type="text/tikz"]')) return;
+        if (root.dataset.tikzFallbackTried === '1') {
+            replaceUnprocessedTikzScripts(root);
+            return;
+        }
+        root.dataset.tikzFallbackTried = '1';
+        ensureRod2ikTikzJaxLoaded()
+            .then(() => {
+                renderTikzBlocks(root, 4);
+            })
+            .catch((err) => {
+                console.error('TikZ fallback renderer failed to load:', err);
+                replaceUnprocessedTikzScripts(root, 'TikZ renderer failed to load.');
+            });
+    }, delayMs);
+}
+
+function appendProtectedToken(target, tokenValue, isBold, appendTextWithBold) {
+    const tikzSource = extractTikzSource(tokenValue);
+    if (!tikzSource) {
+        appendTextWithBold(target, tokenValue, isBold);
+        return;
+    }
+    const { script, finalSource } = createTikzScriptElement(tikzSource);
+
+    const block = document.createElement('div');
+    block.className = 'tikz-block';
+    block.dataset.tikzOriginal = finalSource;
+    block.dataset.tikzSource = finalSource;
+    block.dataset.tikzVariants = JSON.stringify(buildTikzRetryVariants(finalSource));
+    block.dataset.tikzRetryIndex = '0';
+    block.appendChild(script);
+    ensureTikzLoadingState(block);
+    target.appendChild(block);
+}
+
+function renderTikzBlocks(root, attemptsLeft = 10) {
+    if (!root || !root.querySelector) return;
+    refreshTikzBlockStates(root);
+    const hasPendingScripts = !!root.querySelector('script[type="text/tikz"]');
+    if (!hasPendingScripts) {
+        replaceTikzErrorImages(root);
+        refreshTikzBlockStates(root);
+        root.dataset.tikzPendingWatch = '0';
+        return;
+    }
+
+    // @planktimerr/tikzjax auto-processes new <script type="text/tikz"> via MutationObserver.
+    if (window.TikzJax) {
+        scheduleTikzErrorChecks(root, 120);
+        armPendingTikzScriptWatch(root, 9000);
+        return;
+    }
+
+    // Backward-compat fallback for original TikZJax API.
+    if (typeof window.TikZJax !== 'function') {
+        if (attemptsLeft > 0) {
+            setTimeout(() => renderTikzBlocks(root, attemptsLeft - 1), 250);
+        } else {
+            console.warn('TikZJax is not loaded; TikZ blocks were not rendered.');
+            if (root.dataset.tikzFallbackTried === '1') {
+                replaceUnprocessedTikzScripts(root, 'TikZ renderer is unavailable (CDN load failed).');
+                return;
+            }
+            root.dataset.tikzFallbackTried = '1';
+            ensureRod2ikTikzJaxLoaded()
+                .then(() => {
+                    renderTikzBlocks(root, 4);
+                })
+                .catch((err) => {
+                    console.error('TikZ fallback renderer failed to load:', err);
+                    replaceUnprocessedTikzScripts(root, 'TikZ renderer is unavailable (CDN load failed).');
+                });
+        }
+        return;
+    }
+
+    Promise.resolve(window.TikZJax(root))
+        .catch((err) => {
+            console.error('TikZ render failed:', err);
+        })
+        .finally(() => {
+            scheduleTikzErrorChecks(root, 80);
+            armPendingTikzScriptWatch(root, 7000);
+        });
+}
+
+document.addEventListener('tikzjax-load-finished', (ev) => {
+    const target = ev?.target;
+    if (!target || !target.closest) return;
+    const block = target.closest('.tikz-block');
+    if (!block) return;
+    setTikzReadyState(block);
+});
+
 function renderFormula(formula) {
     const parts = formula.slots.map((slot) => {
         if (slot.type === 'lex') return slot.value;
@@ -483,6 +1002,8 @@ function generateCloze() {
 
     // скидаємо попередній стан/вивід
     out.innerHTML = '';
+    delete out.dataset.tikzPendingWatch;
+    delete out.dataset.tikzFallbackTried;
     res.textContent = '';
     hidden = {};
     counter = 0;
@@ -555,7 +1076,7 @@ function generateCloze() {
             return;
         }
         if (tok.type === 'protected') {
-            appendTextWithBold(container, tok.value, !!tok.bold);
+            appendProtectedToken(container, tok.value, !!tok.bold, appendTextWithBold);
             return;
         }
 
@@ -698,6 +1219,7 @@ function generateCloze() {
     if (window.MathJax && MathJax.typesetPromise) {
         MathJax.typesetPromise([out]);
     }
+    renderTikzBlocks(out);
 
     // Після генерації текстових/математичних пропусків — згенерувати "дірки" на зображеннях (якщо ввімкнено)
     autoOccludeAll();

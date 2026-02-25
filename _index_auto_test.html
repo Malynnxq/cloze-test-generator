@@ -86,7 +86,45 @@
     <!-- 4) Результат перевірки -->
     <p id="result"></p>
 
-    <script defer src="app.js?v=20260220-14"></script>
+    <script defer src="app.js?v=20260220-12"></script>
+<script>
+window.addEventListener('load', () => {
+  const t = document.getElementById('text');
+  const btn = document.getElementById('btnGen');
+  if (!t || !btn) return;
+  t.value = String.raw`\begin{tikzpicture}[>=stealth, line cap=round, line join=round]
+  \draw[->] (-3.2,0) -- (6.8,0);
+  \draw[->] (0,-2.4) -- (0,2.8);
+  \node[below left] at (0,0) {</body>$};
+  \coordinate (Z)  at (2.2,1.5);
+  \coordinate (Zb) at (2.2,-1.5);
+  \coordinate (T)  at (2.7,0.45);
+  \coordinate (S)  at (4.9,1.95);
+  \draw[dashed] (Z) -- (2.2,0);
+  \draw[dashed] (Z) -- (0,1.5);
+  \draw[dashed] (Zb) -- (2.2,0);
+  \draw[dashed] (Zb) -- (0,-1.5);
+  \fill (0,1) circle (1.5pt);
+  \node[left] at (0,1) {$i$};
+  \node[left] at (0,-1.5) {$-y$};
+  \node[below] at (2.2,0) {$x$};
+  \node[below] at (1.0,0) {$1$};
+  \draw[->,thick] (0,0) -- (Z)  node[midway,above left] {$z=(x,y)$};
+  \draw[->,thick] (0,0) -- (Zb) node[midway,below right] {$\bar z$};
+  \draw[->,thick] (0,0) -- (T)  node[midway,above] {$\tilde z$};
+  \draw[->,thick] (Z) -- (S);
+  \draw[->,thick] (T) -- (S);
+  \fill (Z)  circle (1.7pt);
+  \fill (Zb) circle (1.7pt);
+  \fill (S)  circle (1.7pt);
+  \node[above right] at (S) {$z+\tilde z$};
+  \node[right] at (6.6,-0.35) {reelle Achse};
+  \node[left]  at (-0.15,2.55) {imagin\"{a}re Achse};
+\end{tikzpicture}`;
+  setTimeout(() => btn.click(), 1200);
+});
+</script>
 </body>
 
 </html>
+

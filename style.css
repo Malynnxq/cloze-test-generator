@@ -217,6 +217,62 @@ button:disabled {
     white-space: pre-wrap;
 }
 
+.tikz-block {
+    margin: 0.65rem 0;
+    overflow-x: auto;
+    padding: 0.45rem;
+    border-radius: 0.5rem;
+    background: rgba(255, 255, 255, 0.06);
+    border: 1px dashed rgba(0, 245, 255, 0.3);
+}
+
+.tikz-loading {
+    font-weight: 700;
+    color: var(--muted);
+    margin-bottom: 0.35rem;
+    letter-spacing: 0.03em;
+}
+
+.tikz-block.tikz-ready {
+    background: transparent;
+    border-style: solid;
+    border-color: rgba(0, 245, 255, 0.25);
+}
+
+.tikz-block svg {
+    max-width: 100%;
+    height: auto;
+    display: block;
+    background: #ffffff;
+    border-radius: 0.4rem;
+}
+
+.tikz-block img {
+    max-width: 100%;
+    height: auto;
+    display: block;
+    background: #ffffff;
+    border-radius: 0.4rem;
+}
+
+.tikz-error {
+    color: #8b0000;
+    font-weight: 700;
+    margin-bottom: 0.35rem;
+}
+
+.tikz-source {
+    margin: 0;
+    padding: 0.55rem;
+    border-radius: 0.4rem;
+    background: #f5f5f5;
+    border: 1px solid #d6d6d6;
+    color: #202020;
+    white-space: pre-wrap;
+    font-family: Consolas, "Courier New", monospace;
+    font-size: 0.88rem;
+}
+
 .word {
     display: inline-flex;
     align-items: center;
