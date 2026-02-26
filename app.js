@@ -8,6 +8,8 @@ const chkSpeedMode = document.getElementById('speedMode');
 const speedPanel = document.getElementById('speedPanel');
 const speedMinutesInput = document.getElementById('speedMinutes');
 const speedStatus = document.getElementById('speedStatus');
+const chkRetryRevealMode = document.getElementById('retryRevealMode');
+const retryRevealCountInput = document.getElementById('retryRevealCount');
 
 let tRunning = false;
 let tElapsedMs = 0;
@@ -77,6 +79,30 @@ function refreshSpeedPanel() {
     speedPanel.hidden = !chkSpeedMode.checked;
 }
 
+function normalizeRetryRevealCount() {
+    if (!retryRevealCountInput) return 1;
+    const raw = Number(retryRevealCountInput.value);
+    const value = Number.isFinite(raw) ? Math.floor(raw) : 1;
+    const safe = Math.max(1, value || 1);
+    retryRevealCountInput.value = String(safe);
+    return safe;
+}
+
+function isRetryRevealEnabled() {
+    return !!chkRetryRevealMode?.checked;
+}
+
+function syncRetryRevealControls() {
+    if (!retryRevealCountInput) return;
+    const enabled = isRetryRevealEnabled();
+    retryRevealCountInput.disabled = !enabled;
+    if (!enabled) {
+        failedEnterChecks.clear();
+        lastFailedValues.clear();
+    }
+    normalizeRetryRevealCount();
+}
+
 function clearSpeedTick() {
     if (!speedState.tickHandle) return;
     clearInterval(speedState.tickHandle);
@@ -97,17 +123,98 @@ function rerenderUpdatedFormulas(updatedFormulas) {
     }
 }
 
+function focusBlankInput(inp) {
+    if (!inp || !inp.isConnected) return;
+    inp.focus();
+    inp.select?.();
+}
+
+function findNextBlankInput(currentInp) {
+    if (!currentInp) return null;
+    const inputs = Array.from(document.querySelectorAll('input.blank'));
+    const idx = inputs.indexOf(currentInp);
+    if (idx === -1) return null;
+    return inputs[idx + 1] || null;
+}
+
+function computeScoreTotal(fallbackCount = 0) {
+    const base = totalBlanks || fallbackCount;
+    return Math.max(0, base - excludedFromStats.size);
+}
+
+function updateResultLine(fallbackCount = 0) {
+    const ok = solved.size;
+    const total = computeScoreTotal(fallbackCount);
+    document.getElementById('result').textContent = `\u041F\u0440\u0430\u0432\u0438\u043B\u044C\u043D\u043E: ${ok}/${total} - \u0427\u0430\u0441: ${fmt(tElapsedMs)}`;
+}
+
 function fillBlankWithAnswer(inp, id, updatedFormulas = null) {
     if (!inp || !inp.isConnected) return;
     solved.add(id);
-    const filled = document.createElement('span');
-    filled.className = 'filled';
-    filled.textContent = hidden[id];
-    inp.replaceWith(filled);
-    if (updatedFormulas && inp.classList.contains('math-blank')) {
+    revealedWrongInFormula.delete(id);
+    excludedFromStats.delete(id);
+    failedEnterChecks.delete(id);
+    lastFailedValues.delete(id);
+    const isMathBlank = inp.classList.contains('math-blank');
+    if (isMathBlank) {
+        const mathLabel = inp.closest('label');
+        if (mathLabel) mathLabel.remove();
+    } else {
+        const filled = document.createElement('span');
+        filled.className = 'filled';
+        filled.textContent = hidden[id];
+        inp.replaceWith(filled);
+    }
+    if (updatedFormulas && isMathBlank) {
         const slotInfo = mathIdToSlot.get(id);
         if (slotInfo) updatedFormulas.add(slotInfo.formula);
     }
+}
+
+function fillBlankWithWrongAttempt(inp, id, wrongValue, updatedFormulas = null) {
+    if (!inp || !inp.isConnected) return;
+    solved.delete(id);
+    revealedWrongInFormula.add(id);
+    excludedFromStats.add(id);
+    failedEnterChecks.delete(id);
+    lastFailedValues.delete(id);
+    const isMathBlank = inp.classList.contains('math-blank');
+
+    const filled = document.createElement('span');
+    filled.className = 'filled filled-wrong';
+
+    const correct = document.createElement('span');
+    correct.className = 'filled-correct-answer';
+    correct.textContent = hidden[id];
+
+    const wrong = document.createElement('span');
+    wrong.className = 'filled-wrong-answer';
+    wrong.textContent = wrongValue || '[порожньо]';
+
+    filled.appendChild(correct);
+    filled.appendChild(wrong);
+    inp.replaceWith(filled);
+    if (updatedFormulas && isMathBlank) {
+        const slotInfo = mathIdToSlot.get(id);
+        if (slotInfo) updatedFormulas.add(slotInfo.formula);
+    }
+}
+
+function handleFailedEnterAttempt(inp, id, val, updatedFormulas = null) {
+    inp.classList.add('incorrect');
+    inp.classList.remove('correct');
+    if (!isRetryRevealEnabled()) return false;
+
+    const missCount = (failedEnterChecks.get(id) || 0) + 1;
+    failedEnterChecks.set(id, missCount);
+    if (val) lastFailedValues.set(id, val);
+
+    const threshold = normalizeRetryRevealCount();
+    if (missCount < threshold) return false;
+
+    const wrongValue = val || lastFailedValues.get(id) || '';
+    fillBlankWithWrongAttempt(inp, id, wrongValue, updatedFormulas);
+    return true;
 }
 
 function stopSpeedMode(resetStatus = true) {
@@ -169,10 +276,18 @@ function beginSpeedStep() {
         const leftMs = speedState.deadline - performance.now();
         if (leftMs <= 0) {
             clearSpeedTick();
-            const updatedFormulas = new Set();
             const id = Number(inp.dataset.index);
-            fillBlankWithAnswer(inp, id, updatedFormulas);
-            rerenderUpdatedFormulas(updatedFormulas);
+            const val = (inp.value || '').trim();
+            if (val === hidden[id]) {
+                const updatedFormulas = new Set();
+                fillBlankWithAnswer(inp, id, updatedFormulas);
+                rerenderUpdatedFormulas(updatedFormulas);
+            } else {
+                const updatedFormulas = new Set();
+                fillBlankWithWrongAttempt(inp, id, val, updatedFormulas);
+                rerenderUpdatedFormulas(updatedFormulas);
+            }
+            speedState.carryMs = 0;
             speedState.activeIndex += 1;
             beginSpeedStep();
             return;
@@ -197,7 +312,14 @@ function submitSpeedBlank() {
     const id = Number(inp.dataset.index);
     const val = (inp.value || '').trim();
     if (val !== hidden[id]) {
-        inp.classList.add('incorrect');
+        const updatedFormulas = new Set();
+        const revealed = handleFailedEnterAttempt(inp, id, val, updatedFormulas);
+        rerenderUpdatedFormulas(updatedFormulas);
+        if (revealed) {
+            speedState.carryMs = 0;
+            speedState.activeIndex += 1;
+            beginSpeedStep();
+        }
         return;
     }
 
@@ -242,6 +364,10 @@ let solved = new Set();
 let totalBlanks = 0;
 let mathFormulas = [];
 let mathIdToSlot = new Map();
+let revealedWrongInFormula = new Set();
+let failedEnterChecks = new Map();
+let lastFailedValues = new Map();
+let excludedFromStats = new Set();
 
 // ==== ЗОБРАЖЕННЯ: стан та утиліти ====
 let figures = [];     // [{id, el, imgBox, regions:[{key,x,y,w,h,el,hidden}]}]
@@ -935,8 +1061,10 @@ function renderFormula(formula) {
     const parts = formula.slots.map((slot) => {
         if (slot.type === 'lex') return slot.value;
         return solved.has(slot.id)
-            ? slot.value
-            : makePlaceholder(slot.id, slot.value, slot.prevLex);
+            ? `\\textcolor{lime}{${slot.value}}`
+            : revealedWrongInFormula.has(slot.id)
+                ? `\\textcolor{violet}{${slot.value}}`
+                : makePlaceholder(slot.id, slot.value, slot.prevLex);
     });
     formula.span.textContent = formula.delim + parts.join('') + formula.delim;
 }
@@ -1011,6 +1139,10 @@ function generateCloze() {
     totalBlanks = 0;
     mathFormulas = [];
     mathIdToSlot = new Map();
+    revealedWrongInFormula = new Set();
+    failedEnterChecks = new Map();
+    lastFailedValues = new Map();
+    excludedFromStats = new Set();
 
     if (!raw.trim()) return;
 
@@ -1227,7 +1359,7 @@ function generateCloze() {
 }
 
 // Перевірка відповідей
-function checkAnswers() {
+function legacyCheckAnswers() {
     if (speedState.running) stopSpeedMode(false);
     const inputs = document.querySelectorAll('input.blank');
     let ok = solved.size;
@@ -1253,6 +1385,49 @@ function checkAnswers() {
 }
 
 // Завантаження зображень
+function checkAnswers(options = {}) {
+    const {
+        onlyInput = null,
+        trackEnterChecks = false,
+        moveFocusForward = false
+    } = options;
+
+    if (speedState.running) stopSpeedMode(false);
+
+    const allInputs = Array.from(document.querySelectorAll('input.blank'));
+    const inputs = onlyInput ? [onlyInput] : allInputs;
+    const updatedFormulas = new Set();
+
+    inputs.forEach((inp) => {
+        if (!inp || !inp.isConnected) return;
+        const id = Number(inp.dataset.index);
+        if (!Number.isFinite(id) || excludedFromStats.has(id)) return;
+
+        const val = (inp.value || '').trim();
+        if (val === hidden[id]) {
+            const nextInp = moveFocusForward ? findNextBlankInput(inp) : null;
+            fillBlankWithAnswer(inp, id, updatedFormulas);
+            if (nextInp) focusBlankInput(nextInp);
+            return;
+        }
+
+        const nextInp = moveFocusForward ? findNextBlankInput(inp) : null;
+        if (!trackEnterChecks) {
+            inp.classList.add('incorrect');
+            inp.classList.remove('correct');
+            return;
+        }
+
+        const revealed = handleFailedEnterAttempt(inp, id, val, updatedFormulas);
+        if (revealed && nextInp) focusBlankInput(nextInp);
+    });
+
+    rerenderUpdatedFormulas(updatedFormulas);
+
+    if (chkAutoStop.checked) pauseTimer();
+    updateResultLine(allInputs.length);
+}
+
 document.getElementById('imgInput').addEventListener('change', (e) => {
     if (!e.target.files?.length) return;
     addImages([...e.target.files]);
@@ -1287,6 +1462,10 @@ chkSpeedMode?.addEventListener('change', () => {
 speedMinutesInput?.addEventListener('change', () => {
     if (speedState.running) startSpeedMode();
 });
+chkRetryRevealMode?.addEventListener('change', syncRetryRevealControls);
+retryRevealCountInput?.addEventListener('input', normalizeRetryRevealCount);
+retryRevealCountInput?.addEventListener('change', normalizeRetryRevealCount);
+syncRetryRevealControls();
 
 // Клавіатурні скорочення: Enter = перевірити, Ctrl+G = згенерувати
 document.addEventListener('keydown', (e) => {
@@ -1294,6 +1473,15 @@ document.addEventListener('keydown', (e) => {
         e.preventDefault();
         if (speedState.running) {
             submitSpeedBlank();
+            return;
+        }
+        const active = document.activeElement;
+        if (active?.matches?.('input.blank')) {
+            checkAnswers({
+                onlyInput: active,
+                trackEnterChecks: true,
+                moveFocusForward: true
+            });
             return;
         }
         checkAnswers();
