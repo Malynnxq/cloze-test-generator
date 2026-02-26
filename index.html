@@ -10,7 +10,11 @@
     <!-- MathJax 3 (TeX → SVG) — додано -->
     <script>
         window.MathJax = {
+            loader: {
+                load: ['[tex]/cancel']
+            },
             tex: {
+                packages: { '[+]': ['cancel'] },
                 inlineMath: [['$', '$'], ['\\(', '\\)']],
                 displayMath: [['$$', '$$'], ['\\[', '\\]']]
             },
@@ -90,7 +94,7 @@
     <!-- 4) Результат перевірки -->
     <p id="result"></p>
 
-    <script defer src="app.js?v=20260226-21"></script>
+    <script defer src="app.js?v=20260226-22"></script>
 </body>
 
 </html>

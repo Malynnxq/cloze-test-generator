@@ -148,10 +148,13 @@ function updateResultLine(fallbackCount = 0) {
     document.getElementById('result').textContent = `\u041F\u0440\u0430\u0432\u0438\u043B\u044C\u043D\u043E: ${ok}/${total} - \u0427\u0430\u0441: ${fmt(tElapsedMs)}`;
 }
 
+const EMPTY_INPUT_MARK = '[\u043F\u043E\u0440\u043E\u0436\u043D\u044C\u043E]';
+
 function fillBlankWithAnswer(inp, id, updatedFormulas = null) {
     if (!inp || !inp.isConnected) return;
     solved.add(id);
     revealedWrongInFormula.delete(id);
+    wrongInputInFormula.delete(id);
     excludedFromStats.delete(id);
     failedEnterChecks.delete(id);
     lastFailedValues.delete(id);
@@ -179,21 +182,28 @@ function fillBlankWithWrongAttempt(inp, id, wrongValue, updatedFormulas = null) 
     failedEnterChecks.delete(id);
     lastFailedValues.delete(id);
     const isMathBlank = inp.classList.contains('math-blank');
+    const wrongText = wrongValue || EMPTY_INPUT_MARK;
+    wrongInputInFormula.set(id, wrongText);
 
-    const filled = document.createElement('span');
-    filled.className = 'filled filled-wrong';
+    if (isMathBlank) {
+        const mathLabel = inp.closest('label');
+        if (mathLabel) mathLabel.remove();
+    } else {
+        const filled = document.createElement('span');
+        filled.className = 'filled filled-wrong';
 
-    const correct = document.createElement('span');
-    correct.className = 'filled-correct-answer';
-    correct.textContent = hidden[id];
+        const correct = document.createElement('span');
+        correct.className = 'filled-correct-answer';
+        correct.textContent = hidden[id];
 
-    const wrong = document.createElement('span');
-    wrong.className = 'filled-wrong-answer';
-    wrong.textContent = wrongValue || '[порожньо]';
+        const wrong = document.createElement('span');
+        wrong.className = 'filled-wrong-answer';
+        wrong.textContent = wrongText;
 
-    filled.appendChild(correct);
-    filled.appendChild(wrong);
-    inp.replaceWith(filled);
+        filled.appendChild(correct);
+        filled.appendChild(wrong);
+        inp.replaceWith(filled);
+    }
     if (updatedFormulas && isMathBlank) {
         const slotInfo = mathIdToSlot.get(id);
         if (slotInfo) updatedFormulas.add(slotInfo.formula);
@@ -365,6 +375,7 @@ let totalBlanks = 0;
 let mathFormulas = [];
 let mathIdToSlot = new Map();
 let revealedWrongInFormula = new Set();
+let wrongInputInFormula = new Map();
 let failedEnterChecks = new Map();
 let lastFailedValues = new Map();
 let excludedFromStats = new Set();
@@ -1057,13 +1068,26 @@ document.addEventListener('tikzjax-load-finished', (ev) => {
     setTikzReadyState(block);
 });
 
+function escapeTexText(value) {
+    return String(value ?? '')
+        .replace(/\\/g, '\\textbackslash{}')
+        .replace(/([{}#$%&_])/g, '\\$1')
+        .replace(/\^/g, '\\textasciicircum{}')
+        .replace(/~/g, '\\textasciitilde{}');
+}
+
+function makeWrongRevealTex(correctValue, wrongValue) {
+    const wrongEscaped = escapeTexText(wrongValue || EMPTY_INPUT_MARK);
+    return `\\overset{\\textcolor{lime}{${correctValue}}}{\\textcolor{red}{\\cancel{\\text{${wrongEscaped}}}}}`;
+}
+
 function renderFormula(formula) {
     const parts = formula.slots.map((slot) => {
         if (slot.type === 'lex') return slot.value;
         return solved.has(slot.id)
             ? `\\textcolor{lime}{${slot.value}}`
             : revealedWrongInFormula.has(slot.id)
-                ? `\\textcolor{violet}{${slot.value}}`
+                ? makeWrongRevealTex(slot.value, wrongInputInFormula.get(slot.id))
                 : makePlaceholder(slot.id, slot.value, slot.prevLex);
     });
     formula.span.textContent = formula.delim + parts.join('') + formula.delim;
@@ -1140,6 +1164,7 @@ function generateCloze() {
     mathFormulas = [];
     mathIdToSlot = new Map();
     revealedWrongInFormula = new Set();
+    wrongInputInFormula = new Map();
     failedEnterChecks = new Map();
     lastFailedValues = new Map();
     excludedFromStats = new Set();
