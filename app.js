@@ -1078,7 +1078,7 @@ function escapeTexText(value) {
 
 function makeWrongRevealTex(correctValue, wrongValue) {
     const wrongEscaped = escapeTexText(wrongValue || EMPTY_INPUT_MARK);
-    return `\\overset{\\textcolor{lime}{${correctValue}}}{\\textcolor{red}{\\cancel{\\text{${wrongEscaped}}}}}`;
+    return `\\overset{\\textcolor{red}{\\cancel{\\text{${wrongEscaped}}}}}{\\textcolor{lime}{${correctValue}}}`;
 }
 
 function renderFormula(formula) {

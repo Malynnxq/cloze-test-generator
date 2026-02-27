@@ -338,22 +338,23 @@ button:disabled {
 .filled {
     display: inline-flex;
     align-items: center;
-    padding: 0.2rem 0.45rem;
-    border-radius: 0.35rem;
-    background: rgba(124, 255, 107, 0.18);
-    border: 1px solid rgba(124, 255, 107, 0.7);
+    padding: 0;
+    border-radius: 0;
+    background: transparent;
+    border: none;
     color: var(--accent-2);
     font-weight: 600;
-    box-shadow: 0 0 12px rgba(124, 255, 107, 0.35);
+    box-shadow: none;
 }
 
 .filled-wrong {
+    padding: 0.2rem 0.45rem;
+    border-radius: 0.35rem;
     flex-direction: column;
     align-items: flex-start;
     gap: 0.05rem;
     background: rgba(255, 92, 92, 0.08);
-    border-color: rgba(255, 92, 92, 0.55);
-    box-shadow: none;
+    border: 1px solid rgba(255, 92, 92, 0.55);
 }
 
 .filled-correct-answer {
