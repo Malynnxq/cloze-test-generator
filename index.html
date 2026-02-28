@@ -4,7 +4,7 @@
 <head>
     <meta charset="UTF-8">
     <title>Cloze-Test (Minimal + Timer)</title>
-    <link rel="stylesheet" href="style.css?v=20260226-24">
+    <link rel="stylesheet" href="style.css?v=20260227-33">
     <link rel="stylesheet" href="https://tikzjax.com/v1/fonts.css">
 
     <!-- MathJax 3 (TeX → SVG) — додано -->
@@ -80,6 +80,11 @@
             <label for="speedMinutes">&#1063;&#1072;&#1089; (&#1093;&#1074;):
                 <input id="speedMinutes" type="number" min="1" step="1" value="5">
             </label>
+            <label><input type="checkbox" id="smartSpeedCalc" checked> Розумний прорахунок</label>
+            <label><input type="checkbox" id="timeoutLeniency"> Таймаут-залік (%)</label>
+            <label>%:
+                <input id="timeoutLeniencyPercent" type="number" min="1" max="100" step="1" value="70" disabled>
+            </label>
             <span id="speedStatus" aria-live="polite"></span>
         </div>
     </div>
@@ -94,7 +99,7 @@
     <!-- 4) Результат перевірки -->
     <p id="result"></p>
 
-    <script defer src="app.js?v=20260226-23"></script>
+    <script defer src="app.js?v=20260227-38"></script>
 </body>
 
 </html>

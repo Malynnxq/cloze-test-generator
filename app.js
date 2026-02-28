@@ -8,6 +8,9 @@ const chkSpeedMode = document.getElementById('speedMode');
 const speedPanel = document.getElementById('speedPanel');
 const speedMinutesInput = document.getElementById('speedMinutes');
 const speedStatus = document.getElementById('speedStatus');
+const chkSmartSpeedCalc = document.getElementById('smartSpeedCalc');
+const chkTimeoutLeniency = document.getElementById('timeoutLeniency');
+const timeoutLeniencyPercentInput = document.getElementById('timeoutLeniencyPercent');
 const chkRetryRevealMode = document.getElementById('retryRevealMode');
 const retryRevealCountInput = document.getElementById('retryRevealCount');
 
@@ -20,9 +23,16 @@ const speedState = {
     blanks: [],
     activeIndex: -1,
     perBlankMs: 0,
+    slotDurationsMs: [],
+    smartMode: false,
     carryMs: 0,
     deadline: 0,
     tickHandle: null
+};
+const focusState = {
+    lastScrolledId: null,
+    lastScrollAt: 0,
+    lastUserScrollAt: 0
 };
 
 function fmt(ms) {
@@ -66,7 +76,13 @@ btnReset.addEventListener('click', resetTimer);
 updateDisplay();
 
 function fmtSecs(ms) {
-    return `${(Math.max(0, ms) / 1000).toFixed(1)} с`;
+    const safeMs = Math.max(0, ms);
+    const totalTenths = Math.ceil(safeMs / 100);
+    const totalSec = Math.floor(totalTenths / 10);
+    const mm = String(Math.floor(totalSec / 60)).padStart(2, '0');
+    const ss = String(totalSec % 60).padStart(2, '0');
+    const tenths = String(totalTenths % 10);
+    return `${mm}:${ss}.${tenths} с`;
 }
 
 function setSpeedStatus(text) {
@@ -77,6 +93,109 @@ function setSpeedStatus(text) {
 function refreshSpeedPanel() {
     if (!speedPanel || !chkSpeedMode) return;
     speedPanel.hidden = !chkSpeedMode.checked;
+}
+
+function countReadableWords(text) {
+    if (!text) return 0;
+    const words = String(text).match(/[\p{L}\p{N}']+/gu);
+    return words ? words.length : 0;
+}
+
+function collectReadWordsByBlankId(root) {
+    const readWordsById = new Map();
+    if (!root) return readWordsById;
+
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT | NodeFilter.SHOW_TEXT);
+    let wordsSincePreviousBlank = 0;
+    let node = walker.currentNode;
+    while (node) {
+        if (node.nodeType === Node.TEXT_NODE) {
+            const parent = node.parentElement;
+            if (
+                parent &&
+                parent.tagName !== 'SCRIPT' &&
+                !parent.closest('.tikz-block') &&
+                !parent.closest('.formula-answers') &&
+                !parent.closest('.formula')
+            ) {
+                wordsSincePreviousBlank += countReadableWords(node.nodeValue);
+            }
+        } else if (node.nodeType === Node.ELEMENT_NODE) {
+            const el = node;
+            if (el.matches('input.blank')) {
+                const id = Number(el.dataset.index);
+                if (Number.isFinite(id) && !readWordsById.has(id)) {
+                    readWordsById.set(id, wordsSincePreviousBlank);
+                }
+                wordsSincePreviousBlank = 0;
+            }
+        }
+        node = walker.nextNode();
+    }
+
+    return readWordsById;
+}
+
+function computeAnswerUnits(answer) {
+    const raw = String(answer ?? '').trim();
+    if (!raw) return 1;
+    const compact = raw.replace(/\s+/g, '');
+    if (!compact) return 1;
+    if (/^\\[A-Za-z]+$/.test(compact)) {
+        return Math.max(2, Math.ceil((compact.length - 1) / 2));
+    }
+    return Math.max(1, Array.from(compact).length);
+}
+
+function computeMathReadUnits(id) {
+    const slotInfo = mathIdToSlot.get(id);
+    const slots = slotInfo?.formula?.slots;
+    if (!slots?.length) return 0;
+
+    let idx = -1;
+    for (let i = 0; i < slots.length; i++) {
+        const s = slots[i];
+        if (s?.type === 'blank' && s.id === id) {
+            idx = i;
+            break;
+        }
+    }
+    if (idx <= 0) return 0;
+
+    let units = 0;
+    for (let i = idx - 1; i >= 0; i--) {
+        const s = slots[i];
+        if (s?.type === 'blank') break;
+        const lex = String(s?.value ?? '');
+        if (!lex.trim()) continue;
+        if (/^\\[A-Za-z]+$/.test(lex)) units += 1.3;
+        else if (/^[A-Za-z]$/.test(lex)) units += 0.8;
+        else if (/^\d+$/.test(lex)) units += 0.6;
+        else units += 0.4;
+    }
+    return Math.min(10, units);
+}
+
+function computeSmartSpeedDurations(blanks, totalMs) {
+    if (!blanks.length) return [];
+    const outputRoot = document.getElementById('output');
+    const readWordsById = collectReadWordsByBlankId(outputRoot);
+    const weights = blanks.map((inp) => {
+        const id = Number(inp.dataset.index);
+        const isMathBlank = inp.classList.contains('math-blank');
+        const readWords = Math.min(20, readWordsById.get(id) || 0);
+        const mathReadUnits = isMathBlank ? computeMathReadUnits(id) : 0;
+        const readUnits = Math.min(30, readWords + mathReadUnits);
+        const answerUnits = Math.min(18, computeAnswerUnits(hidden[id]));
+        const base = isMathBlank ? 2.2 : 1;
+        return base + readUnits * 0.7 + answerUnits * 0.45;
+    });
+
+    const weightSum = weights.reduce((sum, w) => sum + w, 0);
+    if (!Number.isFinite(weightSum) || weightSum <= 0) {
+        return Array(blanks.length).fill(totalMs / blanks.length);
+    }
+    return weights.map((w) => (totalMs * w) / weightSum);
 }
 
 function normalizeRetryRevealCount() {
@@ -103,6 +222,67 @@ function syncRetryRevealControls() {
     normalizeRetryRevealCount();
 }
 
+function normalizeTimeoutLeniencyPercent() {
+    if (!timeoutLeniencyPercentInput) return 100;
+    const raw = Number(timeoutLeniencyPercentInput.value);
+    const value = Number.isFinite(raw) ? Math.floor(raw) : 70;
+    const safe = Math.min(100, Math.max(1, value || 70));
+    timeoutLeniencyPercentInput.value = String(safe);
+    return safe;
+}
+
+function isTimeoutLeniencyEnabled() {
+    return !!chkTimeoutLeniency?.checked;
+}
+
+function syncTimeoutLeniencyControls() {
+    if (!timeoutLeniencyPercentInput) return;
+    timeoutLeniencyPercentInput.disabled = !isTimeoutLeniencyEnabled();
+    normalizeTimeoutLeniencyPercent();
+}
+
+function levenshteinDistance(a, b) {
+    const n = a.length;
+    const m = b.length;
+    if (!n) return m;
+    if (!m) return n;
+
+    const prev = new Array(m + 1);
+    const curr = new Array(m + 1);
+    for (let j = 0; j <= m; j++) prev[j] = j;
+
+    for (let i = 1; i <= n; i++) {
+        curr[0] = i;
+        for (let j = 1; j <= m; j++) {
+            const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+            curr[j] = Math.min(
+                prev[j] + 1,
+                curr[j - 1] + 1,
+                prev[j - 1] + cost
+            );
+        }
+        for (let j = 0; j <= m; j++) prev[j] = curr[j];
+    }
+    return prev[m];
+}
+
+function calcWordSimilarityPercent(typed, expected) {
+    const a = Array.from(String(typed || '').trim().toLowerCase());
+    const b = Array.from(String(expected || '').trim().toLowerCase());
+    if (!a.length || !b.length) return 0;
+    const dist = levenshteinDistance(a, b);
+    const maxLen = Math.max(a.length, b.length);
+    const similarity = 1 - (dist / maxLen);
+    return Math.max(0, Math.min(100, similarity * 100));
+}
+
+function shouldAcceptTimeoutAsCorrect(inp, typedValue, expectedValue) {
+    if (!isTimeoutLeniencyEnabled()) return false;
+    if (!inp || inp.classList.contains('math-blank')) return false;
+    const threshold = normalizeTimeoutLeniencyPercent();
+    return calcWordSimilarityPercent(typedValue, expectedValue) >= threshold;
+}
+
 function clearSpeedTick() {
     if (!speedState.tickHandle) return;
     clearInterval(speedState.tickHandle);
@@ -116,16 +296,72 @@ function clearSpeedHighlight() {
 }
 
 function rerenderUpdatedFormulas(updatedFormulas) {
-    if (!updatedFormulas || !updatedFormulas.size) return;
+    if (!updatedFormulas || !updatedFormulas.size) return Promise.resolve();
     updatedFormulas.forEach(renderFormula);
     if (window.MathJax && MathJax.typesetPromise) {
-        MathJax.typesetPromise(Array.from(updatedFormulas, (f) => f.span));
+        return MathJax.typesetPromise(Array.from(updatedFormulas, (f) => f.span))
+            .catch(() => { });
     }
+    return Promise.resolve();
+}
+
+function maybeScrollBlankIntoView(inp) {
+    if (!inp || !inp.isConnected) return;
+    const id = Number(inp.dataset.index);
+    const target = getBlankContextAnchor(inp);
+    const rect = target.getBoundingClientRect();
+    const vh = window.innerHeight || document.documentElement.clientHeight || 0;
+    if (!vh) return;
+    const comfortTop = vh * 0.24;
+    const comfortBottom = vh * 0.76;
+    const outsideComfortZone = rect.top < comfortTop || rect.bottom > comfortBottom;
+    if (!outsideComfortZone) return;
+
+    const now = performance.now();
+    if (now - focusState.lastUserScrollAt < 450) return;
+
+    if (Number.isFinite(id) && focusState.lastScrolledId === id && (now - focusState.lastScrollAt) < 350) {
+        return;
+    }
+
+    const targetCenter = rect.top + rect.height / 2;
+    const absoluteCenter = window.scrollY + targetCenter;
+    const desiredCenter = vh * 0.5;
+    const maxScrollY = Math.max(0, document.documentElement.scrollHeight - vh);
+    const nextScrollY = Math.min(maxScrollY, Math.max(0, absoluteCenter - desiredCenter));
+    window.scrollTo({ top: nextScrollY, behavior: 'auto' });
+    if (Number.isFinite(id)) focusState.lastScrolledId = id;
+    focusState.lastScrollAt = now;
+}
+
+function getBlankContextAnchor(inp) {
+    if (!inp || !inp.isConnected) return inp;
+
+    if (inp.classList.contains('math-blank')) {
+        const id = Number(inp.dataset.index);
+        const slotInfo = mathIdToSlot.get(id);
+        const formulaSpan = slotInfo?.formula?.span;
+        if (formulaSpan?.isConnected) {
+            const formulaRow = formulaSpan.closest('.formula-row');
+            return formulaRow || formulaSpan;
+        }
+        const ownRow = inp.closest('.formula-row');
+        if (ownRow) return ownRow;
+    }
+
+    const word = inp.closest('.word');
+    if (word) return word;
+    return inp;
 }
 
 function focusBlankInput(inp) {
     if (!inp || !inp.isConnected) return;
-    inp.focus();
+    try {
+        inp.focus({ preventScroll: true });
+    } catch (_) {
+        inp.focus();
+    }
+    maybeScrollBlankIntoView(inp);
     inp.select?.();
 }
 
@@ -138,14 +374,23 @@ function findNextBlankInput(currentInp) {
 }
 
 function computeScoreTotal(fallbackCount = 0) {
-    const base = totalBlanks || fallbackCount;
-    return Math.max(0, base - excludedFromStats.size);
+    const ids = Object.keys(hidden)
+        .map((k) => Number(k))
+        .filter((id) => Number.isFinite(id));
+    return Math.max(0, totalBlanks || fallbackCount || ids.length);
 }
 
 function updateResultLine(fallbackCount = 0) {
-    const ok = solved.size;
+    const ids = Object.keys(hidden)
+        .map((k) => Number(k))
+        .filter((id) => Number.isFinite(id));
+    let ok = 0;
+    ids.forEach((id) => {
+        if (solved.has(id) && !excludedFromStats.has(id)) ok += 1;
+    });
     const total = computeScoreTotal(fallbackCount);
-    document.getElementById('result').textContent = `\u041F\u0440\u0430\u0432\u0438\u043B\u044C\u043D\u043E: ${ok}/${total} - \u0427\u0430\u0441: ${fmt(tElapsedMs)}`;
+    if (ok > total) ok = total;
+    document.getElementById('result').textContent = `\u041A\u0456\u043B\u044C\u043A\u0456\u0441\u0442\u044C \u043F\u0440\u0430\u0432\u0438\u043B\u044C\u043D\u0438\u0445 \u0432\u0456\u0434\u043F\u043E\u0432\u0456\u0434\u0435\u0439: ${ok}/${total} - \u0427\u0430\u0441: ${fmt(tElapsedMs)}`;
 }
 
 const EMPTY_INPUT_MARK = '[\u043F\u043E\u0440\u043E\u0436\u043D\u044C\u043E]';
@@ -234,6 +479,8 @@ function stopSpeedMode(resetStatus = true) {
     speedState.blanks = [];
     speedState.activeIndex = -1;
     speedState.perBlankMs = 0;
+    speedState.slotDurationsMs = [];
+    speedState.smartMode = false;
     speedState.carryMs = 0;
     speedState.deadline = 0;
     if (resetStatus) setSpeedStatus('');
@@ -248,10 +495,15 @@ function findNextSpeedIndex(startIdx) {
 }
 
 function focusSpeedInput(inp) {
-    if (!inp || !inp.isConnected) return;
-    inp.focus();
-    inp.select?.();
+    focusBlankInput(inp);
 }
+
+window.addEventListener('wheel', () => {
+    focusState.lastUserScrollAt = performance.now();
+}, { passive: true });
+window.addEventListener('touchmove', () => {
+    focusState.lastUserScrollAt = performance.now();
+}, { passive: true });
 
 function finishSpeedMode() {
     clearSpeedTick();
@@ -272,7 +524,9 @@ function beginSpeedStep() {
 
     speedState.activeIndex = idx;
     const inp = speedState.blanks[idx];
-    const slotMs = Math.max(400, speedState.perBlankMs + speedState.carryMs);
+    const plannedMs = speedState.slotDurationsMs[idx] ?? speedState.perBlankMs;
+    const minSlotMs = speedState.smartMode && inp.classList.contains('math-blank') ? 700 : 400;
+    const slotMs = Math.max(minSlotMs, plannedMs + speedState.carryMs);
     speedState.carryMs = 0;
     speedState.deadline = performance.now() + slotMs;
 
@@ -288,21 +542,24 @@ function beginSpeedStep() {
             clearSpeedTick();
             const id = Number(inp.dataset.index);
             const val = (inp.value || '').trim();
-            if (val === hidden[id]) {
-                const updatedFormulas = new Set();
+            const expected = hidden[id];
+            const updatedFormulas = new Set();
+            if (val === expected || shouldAcceptTimeoutAsCorrect(inp, val, expected)) {
                 fillBlankWithAnswer(inp, id, updatedFormulas);
-                rerenderUpdatedFormulas(updatedFormulas);
             } else {
-                const updatedFormulas = new Set();
                 fillBlankWithWrongAttempt(inp, id, val, updatedFormulas);
-                rerenderUpdatedFormulas(updatedFormulas);
             }
             speedState.carryMs = 0;
             speedState.activeIndex += 1;
-            beginSpeedStep();
+            Promise.resolve(rerenderUpdatedFormulas(updatedFormulas)).finally(() => {
+                if (!speedState.running) return;
+                beginSpeedStep();
+            });
             return;
         }
-        setSpeedStatus(`На швидкість: ${idx + 1}/${speedState.blanks.length} • залишилось ${fmtSecs(leftMs)}`);
+        const totalSlots = String(speedState.blanks.length);
+        const currentSlot = String(idx + 1).padStart(totalSlots.length, '0');
+        setSpeedStatus(`На швидкість: ${currentSlot}/${totalSlots} • залишилось ${fmtSecs(leftMs)}`);
     };
 
     tick();
@@ -324,22 +581,24 @@ function submitSpeedBlank() {
     if (val !== hidden[id]) {
         const updatedFormulas = new Set();
         const revealed = handleFailedEnterAttempt(inp, id, val, updatedFormulas);
-        rerenderUpdatedFormulas(updatedFormulas);
-        if (revealed) {
-            speedState.carryMs = 0;
+        Promise.resolve(rerenderUpdatedFormulas(updatedFormulas)).finally(() => {
+            if (!revealed || !speedState.running) return;
+            speedState.carryMs = Math.max(0, speedState.deadline - performance.now());
             speedState.activeIndex += 1;
             beginSpeedStep();
-        }
+        });
         return;
     }
 
     const carry = Math.max(0, speedState.deadline - performance.now());
     const updatedFormulas = new Set();
     fillBlankWithAnswer(inp, id, updatedFormulas);
-    rerenderUpdatedFormulas(updatedFormulas);
     speedState.carryMs = carry;
     speedState.activeIndex += 1;
-    beginSpeedStep();
+    Promise.resolve(rerenderUpdatedFormulas(updatedFormulas)).finally(() => {
+        if (!speedState.running) return;
+        beginSpeedStep();
+    });
 }
 
 function startSpeedMode() {
@@ -357,10 +616,18 @@ function startSpeedMode() {
         return;
     }
 
+    const totalMs = minutes * 60 * 1000;
+    const smartMode = !!chkSmartSpeedCalc?.checked;
+    const slotDurationsMs = smartMode
+        ? computeSmartSpeedDurations(blanks, totalMs)
+        : Array(blanks.length).fill(totalMs / blanks.length);
+
     speedState.running = true;
     speedState.blanks = blanks;
     speedState.activeIndex = 0;
-    speedState.perBlankMs = (minutes * 60 * 1000) / blanks.length;
+    speedState.perBlankMs = totalMs / blanks.length;
+    speedState.slotDurationsMs = slotDurationsMs;
+    speedState.smartMode = smartMode;
     speedState.carryMs = 0;
     beginSpeedStep();
 }
@@ -1076,18 +1343,37 @@ function escapeTexText(value) {
         .replace(/~/g, '\\textasciitilde{}');
 }
 
+const ARGUMENT_COMMANDS = new Set([
+    '\\frac', '\\sqrt', '\\overset', '\\underset', '\\textcolor', '\\color', '\\text',
+    '\\operatorname', '\\mathbb', '\\mathrm', '\\mathbf', '\\mathit',
+    '\\left', '\\right', '\\begin', '\\end', '\\cancel',
+    '\\underline', '\\overline', '\\hat', '\\bar', '\\tilde', '\\vec',
+    '\\overrightarrow', '\\overleftarrow', '\\widehat', '\\widetilde',
+    '\\phantom', '\\hphantom', '\\vphantom'
+]);
+
+function formatMathTokenForReveal(value) {
+    const token = String(value ?? '');
+    if (/^\\[A-Za-z]+$/.test(token) && ARGUMENT_COMMANDS.has(token)) {
+        return `\\text{${escapeTexText(token)}}`;
+    }
+    return token;
+}
+
 function makeWrongRevealTex(correctValue, wrongValue) {
     const wrongEscaped = escapeTexText(wrongValue || EMPTY_INPUT_MARK);
-    return `\\overset{\\textcolor{red}{\\cancel{\\text{${wrongEscaped}}}}}{\\textcolor{lime}{${correctValue}}}`;
+    const safeCorrect = formatMathTokenForReveal(correctValue);
+    return `\\overset{\\textcolor{red}{\\cancel{\\text{${wrongEscaped}}}}}{\\textcolor{lime}{${safeCorrect}}}`;
 }
 
 function renderFormula(formula) {
     const parts = formula.slots.map((slot) => {
         if (slot.type === 'lex') return slot.value;
+        const safeValue = formatMathTokenForReveal(slot.value);
         return solved.has(slot.id)
-            ? `\\textcolor{lime}{${slot.value}}`
+            ? `\\textcolor{lime}{${safeValue}}`
             : revealedWrongInFormula.has(slot.id)
-                ? makeWrongRevealTex(slot.value, wrongInputInFormula.get(slot.id))
+                ? makeWrongRevealTex(safeValue, wrongInputInFormula.get(slot.id))
                 : makePlaceholder(slot.id, slot.value, slot.prevLex);
     });
     formula.span.textContent = formula.delim + parts.join('') + formula.delim;
@@ -1289,9 +1575,10 @@ function generateCloze() {
             for (let k = 0; k < lex.length; k++) {
                 const lx = lex[k];
                 const isCmd = /^\\[a-zA-Z]+$/.test(lx);
+                const needsArgument = isCmd && ARGUMENT_COMMANDS.has(lx);
                 const isTextGroup = typeof lx === 'string' && lx.startsWith('\\text{');
                 const ok = !isTextGroup && (
-                    (isCmd && !RESERVED.has(lx) && lx.length <= 16 && !noHideCmds) ||
+                    (isCmd && !needsArgument && !RESERVED.has(lx) && lx.length <= 16 && !noHideCmds) ||
                     (!isCmd && /^[a-zA-Z]$/.test(lx)) ||
                     (!isCmd && /^\d+$/.test(lx))
                 );
@@ -1406,7 +1693,7 @@ function legacyCheckAnswers() {
     rerenderUpdatedFormulas(updatedFormulas);
 
     if (chkAutoStop.checked) pauseTimer();
-    document.getElementById('result').textContent = `Правильно: ${ok}/${total} — Час: ${fmt(tElapsedMs)}`;
+    document.getElementById('result').textContent = `\u041A\u0456\u043B\u044C\u043A\u0456\u0441\u0442\u044C \u043F\u0440\u0430\u0432\u0438\u043B\u044C\u043D\u0438\u0445 \u0432\u0456\u0434\u043F\u043E\u0432\u0456\u0434\u0435\u0439: ${ok}/${total} - \u0427\u0430\u0441: ${fmt(tElapsedMs)}`;
 }
 
 // Завантаження зображень
@@ -1487,9 +1774,16 @@ chkSpeedMode?.addEventListener('change', () => {
 speedMinutesInput?.addEventListener('change', () => {
     if (speedState.running) startSpeedMode();
 });
+chkSmartSpeedCalc?.addEventListener('change', () => {
+    if (speedState.running) startSpeedMode();
+});
+chkTimeoutLeniency?.addEventListener('change', syncTimeoutLeniencyControls);
+timeoutLeniencyPercentInput?.addEventListener('input', normalizeTimeoutLeniencyPercent);
+timeoutLeniencyPercentInput?.addEventListener('change', normalizeTimeoutLeniencyPercent);
 chkRetryRevealMode?.addEventListener('change', syncRetryRevealControls);
 retryRevealCountInput?.addEventListener('input', normalizeRetryRevealCount);
 retryRevealCountInput?.addEventListener('change', normalizeRetryRevealCount);
+syncTimeoutLeniencyControls();
 syncRetryRevealControls();
 
 // Клавіатурні скорочення: Enter = перевірити, Ctrl+G = згенерувати

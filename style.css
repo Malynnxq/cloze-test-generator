@@ -219,6 +219,7 @@ button:disabled {
     border-radius: 0.75rem;
     min-height: 90px;
     white-space: pre-wrap;
+    overflow-anchor: none;
 }
 
 .tikz-block {
@@ -482,8 +483,17 @@ button:disabled {
 }
 
 #speedStatus {
+    flex: 1 0 100%;
+    display: block;
+    min-height: 1.35em;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    text-align: right;
     color: var(--accent-2);
     font-weight: 700;
+    font-variant-numeric: tabular-nums;
+    font-feature-settings: "tnum";
 }
 
 .blank.speed-active {
