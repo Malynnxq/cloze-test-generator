@@ -380,6 +380,17 @@ function computeScoreTotal(fallbackCount = 0) {
     return Math.max(0, totalBlanks || fallbackCount || ids.length);
 }
 
+function formatResultText(ok, total) {
+    const safeTotal = Math.max(0, Number(total) || 0);
+    const safeOk = Math.min(Math.max(0, Number(ok) || 0), safeTotal);
+    const percent = safeTotal ? (safeOk / safeTotal) * 100 : 0;
+    const percentText = percent.toLocaleString('de-DE', {
+        minimumFractionDigits: 0,
+        maximumFractionDigits: 1
+    });
+    return `\u041A\u0456\u043B\u044C\u043A\u0456\u0441\u0442\u044C \u043F\u0440\u0430\u0432\u0438\u043B\u044C\u043D\u0438\u0445 \u0432\u0456\u0434\u043F\u043E\u0432\u0456\u0434\u0435\u0439: ${safeOk}/${safeTotal} (${percentText}%) - \u0427\u0430\u0441: ${fmt(tElapsedMs)}`;
+}
+
 function updateResultLine(fallbackCount = 0) {
     const ids = Object.keys(hidden)
         .map((k) => Number(k))
@@ -390,7 +401,7 @@ function updateResultLine(fallbackCount = 0) {
     });
     const total = computeScoreTotal(fallbackCount);
     if (ok > total) ok = total;
-    document.getElementById('result').textContent = `\u041A\u0456\u043B\u044C\u043A\u0456\u0441\u0442\u044C \u043F\u0440\u0430\u0432\u0438\u043B\u044C\u043D\u0438\u0445 \u0432\u0456\u0434\u043F\u043E\u0432\u0456\u0434\u0435\u0439: ${ok}/${total} - \u0427\u0430\u0441: ${fmt(tElapsedMs)}`;
+    document.getElementById('result').textContent = formatResultText(ok, total);
 }
 
 const EMPTY_INPUT_MARK = '[\u043F\u043E\u0440\u043E\u0436\u043D\u044C\u043E]';
@@ -835,10 +846,13 @@ function normalizeTikzSource(source) {
     if (!trimmed) return trimmed;
 
     // This TikZ engine wraps input into \begin{document}...\end{document} itself.
-    // Strip user-provided document wrapper to avoid nested document environments.
+    // Strip user-provided document wrapper to avoid nested document environments,
+    // but keep any preamble lines such as \usepackage or \usetikzlibrary.
     const docMatch = trimmed.match(TEX_DOCUMENT_BLOCK_RE);
     if (docMatch) {
-        trimmed = (docMatch[1] || '').trim();
+        const preamble = trimmed.slice(0, docMatch.index).trim();
+        const body = (docMatch[1] || '').trim();
+        trimmed = [preamble, body].filter(Boolean).join('\n\n').trim();
     } else if (TEX_DOCUMENT_RE.test(trimmed)) {
         trimmed = trimmed
             .replace(/\\begin\{document\}/gi, '')
@@ -1693,7 +1707,7 @@ function legacyCheckAnswers() {
     rerenderUpdatedFormulas(updatedFormulas);
 
     if (chkAutoStop.checked) pauseTimer();
-    document.getElementById('result').textContent = `\u041A\u0456\u043B\u044C\u043A\u0456\u0441\u0442\u044C \u043F\u0440\u0430\u0432\u0438\u043B\u044C\u043D\u0438\u0445 \u0432\u0456\u0434\u043F\u043E\u0432\u0456\u0434\u0435\u0439: ${ok}/${total} - \u0427\u0430\u0441: ${fmt(tElapsedMs)}`;
+    document.getElementById('result').textContent = formatResultText(ok, total);
 }
 
 // Завантаження зображень
