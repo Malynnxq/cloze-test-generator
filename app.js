@@ -14,6 +14,7 @@ const timeoutLeniencyPercentInput = document.getElementById('timeoutLeniencyPerc
 const chkRetryRevealMode = document.getElementById('retryRevealMode');
 const retryRevealCountInput = document.getElementById('retryRevealCount');
 const chkSpeechMode = document.getElementById('speechMode');
+const speechLangSelect = document.getElementById('speechLang');
 const speechStatus = document.getElementById('speechStatus');
 const SpeechRecognitionCtor = window.SpeechRecognition || window.webkitSpeechRecognition || null;
 
@@ -115,6 +116,12 @@ function setSpeechStatus(text = '', tone = '') {
 
 function isSpeechModeEnabled() {
     return !!chkSpeechMode?.checked;
+}
+
+function getSpeechRecognitionLang() {
+    const selected = String(speechLangSelect?.value || '').trim();
+    if (selected && selected !== 'auto') return selected;
+    return navigator.language || document.documentElement.lang || 'de-DE';
 }
 
 function clearSpeechTargetHighlight() {
@@ -329,7 +336,7 @@ function syncSpeechRecognition() {
         return;
     }
 
-    recognition.lang = navigator.language || document.documentElement.lang || 'de-DE';
+    recognition.lang = getSpeechRecognitionLang();
 
     try {
         recognition.start();
@@ -2066,6 +2073,9 @@ chkSpeechMode?.addEventListener('change', () => {
         return;
     }
     scheduleSpeechSync(0);
+});
+speechLangSelect?.addEventListener('change', () => {
+    if (isSpeechModeEnabled()) scheduleSpeechSync(0);
 });
 syncTimeoutLeniencyControls();
 syncRetryRevealControls();
