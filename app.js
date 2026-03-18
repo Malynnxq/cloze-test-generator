@@ -231,7 +231,7 @@ function getSpeechRecognition() {
             onlyInput: target,
             trackEnterChecks: true,
             moveFocusForward: true,
-            forceMoveFocusForwardOnFailure: true
+            forceMoveFocusForwardOnFailure: false
         });
 
         if (speechState.listening) {
