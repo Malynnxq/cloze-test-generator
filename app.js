@@ -134,11 +134,135 @@ function clearSpeechTargetHighlight() {
 
 function setSpeechTargetHighlight(inp) {
     clearSpeechTargetHighlight();
-    if (!inp || !inp.isConnected || inp.classList.contains('math-blank')) return;
+    if (!inp || !inp.isConnected) return;
     inp.classList.add('speech-active');
 }
 
-function extractRecognizedWord(transcript) {
+const MATH_SPEECH_ALIAS_PAIRS = [
+    ['null', '0'],
+    ['zero', '0'],
+    ['eins', '1'],
+    ['ein', '1'],
+    ['one', '1'],
+    ['zwei', '2'],
+    ['two', '2'],
+    ['drei', '3'],
+    ['three', '3'],
+    ['vier', '4'],
+    ['four', '4'],
+    ['funf', '5'],
+    ['fuenf', '5'],
+    ['five', '5'],
+    ['sechs', '6'],
+    ['six', '6'],
+    ['sieben', '7'],
+    ['seven', '7'],
+    ['acht', '8'],
+    ['eight', '8'],
+    ['neun', '9'],
+    ['nine', '9'],
+    ['ah', 'a'],
+    ['a', 'a'],
+    ['be', 'b'],
+    ['bee', 'b'],
+    ['b', 'b'],
+    ['ce', 'c'],
+    ['see', 'c'],
+    ['c', 'c'],
+    ['de', 'd'],
+    ['d', 'd'],
+    ['e', 'e'],
+    ['ef', 'f'],
+    ['f', 'f'],
+    ['ge', 'g'],
+    ['g', 'g'],
+    ['ha', 'h'],
+    ['h', 'h'],
+    ['i', 'i'],
+    ['jot', 'j'],
+    ['jay', 'j'],
+    ['j', 'j'],
+    ['ka', 'k'],
+    ['k', 'k'],
+    ['el', 'l'],
+    ['l', 'l'],
+    ['em', 'm'],
+    ['m', 'm'],
+    ['en', 'n'],
+    ['n', 'n'],
+    ['o', 'o'],
+    ['pe', 'p'],
+    ['p', 'p'],
+    ['ku', 'q'],
+    ['q', 'q'],
+    ['er', 'r'],
+    ['r', 'r'],
+    ['es', 's'],
+    ['s', 's'],
+    ['te', 't'],
+    ['t', 't'],
+    ['u', 'u'],
+    ['fau', 'v'],
+    ['vau', 'v'],
+    ['v', 'v'],
+    ['we', 'w'],
+    ['double u', 'w'],
+    ['w', 'w'],
+    ['iks', 'x'],
+    ['x', 'x'],
+    ['ypsilon', 'y'],
+    ['why', 'y'],
+    ['y', 'y'],
+    ['zet', 'z'],
+    ['zed', 'z'],
+    ['z', 'z'],
+    ['alpha', '\\alpha'],
+    ['beta', '\\beta'],
+    ['gamma', '\\gamma'],
+    ['delta', '\\delta'],
+    ['epsilon', '\\epsilon'],
+    ['theta', '\\theta'],
+    ['lambda', '\\lambda'],
+    ['mu', '\\mu'],
+    ['pi', '\\pi'],
+    ['rho', '\\rho'],
+    ['sigma', '\\sigma'],
+    ['phi', '\\phi'],
+    ['psi', '\\psi'],
+    ['omega', '\\omega']
+];
+
+const MATH_SPEECH_ALIASES = new Map(MATH_SPEECH_ALIAS_PAIRS);
+
+function normalizeSpeechAliasKey(text) {
+    return String(text || '')
+        .normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '')
+        .toLowerCase()
+        .replace(/[^\p{L}\p{N}\\]+/gu, ' ')
+        .trim()
+        .replace(/\s+/g, ' ');
+}
+
+function extractRecognizedMathToken(transcript) {
+    const normalizedTranscript = normalizeSpeechAliasKey(transcript);
+    if (!normalizedTranscript) return '';
+    if (MATH_SPEECH_ALIASES.has(normalizedTranscript)) {
+        return MATH_SPEECH_ALIASES.get(normalizedTranscript) || '';
+    }
+    const firstWord = normalizedTranscript.split(' ')[0] || '';
+    if (MATH_SPEECH_ALIASES.has(firstWord)) {
+        return MATH_SPEECH_ALIASES.get(firstWord) || '';
+    }
+    if (/^\\[a-z]+$/i.test(firstWord)) return firstWord;
+    if (/^[a-z0-9]$/i.test(firstWord)) return firstWord.toLowerCase();
+    return '';
+}
+
+function extractRecognizedWord(transcript, inp = null) {
+    if (inp?.classList?.contains('math-blank')) {
+        return extractRecognizedMathToken(transcript);
+    }
     const raw = String(transcript || '').trim();
     if (!raw) return '';
     const match = raw.match(/[\p{L}\p{N}][\p{L}\p{N}'-]*/u);
@@ -216,7 +340,7 @@ function getSpeechRecognition() {
             .map((result) => result?.[0]?.transcript || '')
             .join(' ')
             .trim();
-        const word = extractRecognizedWord(transcript);
+        const word = extractRecognizedWord(transcript, target);
 
         if (!word) {
             setSpeechStatus('Не вдалося виділити одне слово. Спробуй ще раз.', 'error');
@@ -319,11 +443,6 @@ function syncSpeechRecognition() {
     if (document.activeElement !== target) {
         focusBlankInput(target);
         target = getActiveBlankInput() || target;
-    }
-
-    if (target.classList.contains('math-blank')) {
-        stopSpeechRecognition(`Пропуск ${target.dataset.index} є математичним. Введи його вручну.`, 'error');
-        return;
     }
 
     const prevTarget = speechState.targetInput;
