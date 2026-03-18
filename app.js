@@ -13,6 +13,9 @@ const chkTimeoutLeniency = document.getElementById('timeoutLeniency');
 const timeoutLeniencyPercentInput = document.getElementById('timeoutLeniencyPercent');
 const chkRetryRevealMode = document.getElementById('retryRevealMode');
 const retryRevealCountInput = document.getElementById('retryRevealCount');
+const chkSpeechMode = document.getElementById('speechMode');
+const speechStatus = document.getElementById('speechStatus');
+const SpeechRecognitionCtor = window.SpeechRecognition || window.webkitSpeechRecognition || null;
 
 let tRunning = false;
 let tElapsedMs = 0;
@@ -33,6 +36,15 @@ const focusState = {
     lastScrolledId: null,
     lastScrollAt: 0,
     lastUserScrollAt: 0
+};
+const speechState = {
+    supported: typeof SpeechRecognitionCtor === 'function',
+    recognition: null,
+    listening: false,
+    shouldListen: false,
+    stopRequested: false,
+    syncTimer: 0,
+    targetInput: null
 };
 
 function fmt(ms) {
@@ -93,6 +105,241 @@ function setSpeedStatus(text) {
 function refreshSpeedPanel() {
     if (!speedPanel || !chkSpeedMode) return;
     speedPanel.hidden = !chkSpeedMode.checked;
+}
+
+function setSpeechStatus(text = '', tone = '') {
+    if (!speechStatus) return;
+    speechStatus.textContent = text || '';
+    speechStatus.className = tone || '';
+}
+
+function isSpeechModeEnabled() {
+    return !!chkSpeechMode?.checked;
+}
+
+function clearSpeechTargetHighlight() {
+    document.querySelectorAll('input.blank.speech-active').forEach((el) => {
+        el.classList.remove('speech-active');
+    });
+}
+
+function setSpeechTargetHighlight(inp) {
+    clearSpeechTargetHighlight();
+    if (!inp || !inp.isConnected || inp.classList.contains('math-blank')) return;
+    inp.classList.add('speech-active');
+}
+
+function extractRecognizedWord(transcript) {
+    const raw = String(transcript || '').trim();
+    if (!raw) return '';
+    const match = raw.match(/[\p{L}\p{N}][\p{L}\p{N}'-]*/u);
+    return match ? match[0] : '';
+}
+
+function clearSpeechSyncTimer() {
+    if (!speechState.syncTimer) return;
+    clearTimeout(speechState.syncTimer);
+    speechState.syncTimer = 0;
+}
+
+function scheduleSpeechSync(delayMs = 0) {
+    clearSpeechSyncTimer();
+    speechState.syncTimer = window.setTimeout(() => {
+        speechState.syncTimer = 0;
+        syncSpeechRecognition();
+    }, Math.max(0, Number(delayMs) || 0));
+}
+
+function getActiveBlankInput() {
+    const active = document.activeElement;
+    if (!active?.matches?.('input.blank') || !active.isConnected) return null;
+    return active;
+}
+
+function getSpeechCandidateInput() {
+    return getActiveBlankInput() || document.querySelector('input.blank');
+}
+
+function stopSpeechRecognition(statusText = '', tone = '') {
+    clearSpeechSyncTimer();
+    speechState.shouldListen = false;
+    speechState.targetInput = null;
+    clearSpeechTargetHighlight();
+
+    if (speechState.listening && speechState.recognition) {
+        speechState.stopRequested = true;
+        try {
+            speechState.recognition.abort();
+        } catch (_) { }
+    } else {
+        speechState.stopRequested = false;
+    }
+
+    setSpeechStatus(statusText, tone);
+}
+
+function getSpeechRecognition() {
+    if (!speechState.supported) return null;
+    if (speechState.recognition) return speechState.recognition;
+
+    const recognition = new SpeechRecognitionCtor();
+    recognition.continuous = false;
+    recognition.interimResults = false;
+    recognition.maxAlternatives = 1;
+
+    recognition.onstart = () => {
+        speechState.listening = true;
+        const target = speechState.targetInput;
+        setSpeechTargetHighlight(target);
+        const targetId = target?.dataset?.index;
+        setSpeechStatus(
+            targetId ? `Мікрофон слухає пропуск ${targetId}.` : 'Мікрофон слухає.',
+            'listening'
+        );
+    };
+
+    recognition.onresult = (event) => {
+        const target = speechState.targetInput;
+        if (!target || !target.isConnected) return;
+
+        const transcript = Array.from(event.results || [])
+            .slice(event.resultIndex)
+            .map((result) => result?.[0]?.transcript || '')
+            .join(' ')
+            .trim();
+        const word = extractRecognizedWord(transcript);
+
+        if (!word) {
+            setSpeechStatus('Не вдалося виділити одне слово. Спробуй ще раз.', 'error');
+            return;
+        }
+
+        target.value = word;
+        target.classList.remove('incorrect');
+        target.classList.remove('correct');
+        setSpeechStatus(`Розпізнано: ${word}`, 'ready');
+
+        checkAnswers({
+            onlyInput: target,
+            trackEnterChecks: true,
+            moveFocusForward: true,
+            forceMoveFocusForwardOnFailure: true
+        });
+    };
+
+    recognition.onerror = (event) => {
+        speechState.listening = false;
+        clearSpeechTargetHighlight();
+
+        if (speechState.stopRequested && event.error === 'aborted') return;
+
+        if (event.error === 'not-allowed' || event.error === 'service-not-allowed') {
+            if (chkSpeechMode) chkSpeechMode.checked = false;
+            speechState.shouldListen = false;
+            setSpeechStatus('Доступ до мікрофона заблоковано браузером.', 'error');
+            return;
+        }
+        if (event.error === 'audio-capture') {
+            speechState.shouldListen = false;
+            setSpeechStatus('Мікрофон не знайдено або він недоступний.', 'error');
+            return;
+        }
+        if (event.error === 'no-speech') {
+            setSpeechStatus('Не почув слово. Спробуй ще раз.', 'error');
+            return;
+        }
+
+        setSpeechStatus(`Помилка мікрофона: ${event.error}`, 'error');
+    };
+
+    recognition.onend = () => {
+        speechState.listening = false;
+        clearSpeechTargetHighlight();
+
+        if (speechState.stopRequested) {
+            speechState.stopRequested = false;
+            return;
+        }
+
+        if (speechState.shouldListen && isSpeechModeEnabled()) {
+            scheduleSpeechSync(140);
+        }
+    };
+
+    speechState.recognition = recognition;
+    return recognition;
+}
+
+function syncSpeechRecognition() {
+    if (!speechState.supported) {
+        if (chkSpeechMode) chkSpeechMode.disabled = true;
+        setSpeechStatus('Цей браузер не підтримує голосове введення.', 'error');
+        return;
+    }
+
+    if (!isSpeechModeEnabled()) {
+        stopSpeechRecognition();
+        return;
+    }
+
+    if (speedState.running) {
+        stopSpeechRecognition('Голосовий режим вимкнений під час speed mode.', 'error');
+        return;
+    }
+
+    let target = getSpeechCandidateInput();
+    if (!target) {
+        stopSpeechRecognition(totalBlanks ? 'Усі пропуски вже оброблені.' : 'Спочатку створи пропуски.', 'ready');
+        return;
+    }
+
+    if (document.activeElement !== target) {
+        focusBlankInput(target);
+        target = getActiveBlankInput() || target;
+    }
+
+    if (target.classList.contains('math-blank')) {
+        stopSpeechRecognition(`Пропуск ${target.dataset.index} є математичним. Введи його вручну.`, 'error');
+        return;
+    }
+
+    const prevTarget = speechState.targetInput;
+    speechState.shouldListen = true;
+
+    if (speechState.listening) {
+        if (prevTarget === target) {
+            speechState.targetInput = target;
+            setSpeechTargetHighlight(target);
+            setSpeechStatus(`Мікрофон слухає пропуск ${target.dataset.index}.`, 'listening');
+            return;
+        }
+        speechState.targetInput = target;
+        speechState.stopRequested = true;
+        try {
+            speechState.recognition?.abort();
+        } catch (_) { }
+        return;
+    }
+
+    speechState.targetInput = target;
+    setSpeechTargetHighlight(target);
+    const recognition = getSpeechRecognition();
+    if (!recognition) {
+        setSpeechStatus('Не вдалося ініціалізувати мікрофон.', 'error');
+        return;
+    }
+
+    recognition.lang = navigator.language || document.documentElement.lang || 'de-DE';
+
+    try {
+        recognition.start();
+    } catch (error) {
+        const message = String(error?.message || error || '');
+        if (!/already started/i.test(message)) {
+            speechState.shouldListen = false;
+            setSpeechStatus('Не вдалося запустити розпізнавання голосу.', 'error');
+        }
+    }
 }
 
 function countReadableWords(text) {
@@ -363,6 +610,7 @@ function focusBlankInput(inp) {
     }
     maybeScrollBlankIntoView(inp);
     inp.select?.();
+    if (isSpeechModeEnabled()) scheduleSpeechSync(0);
 }
 
 function findNextBlankInput(currentInp) {
@@ -1448,6 +1696,7 @@ function generateCloze() {
     const noHideCmds = !!document.getElementById('noHideMathCommands')?.checked;
     const ignorePunctuation = !!document.getElementById('ignorePunctuation')?.checked;
     stopSpeedMode();
+    stopSpeechRecognition();
 
     // Таймер: авто-старт, скидання часу
     if (chkAutoStart.checked) { resetTimer(); startTimer(); }
@@ -1469,7 +1718,10 @@ function generateCloze() {
     lastFailedValues = new Map();
     excludedFromStats = new Set();
 
-    if (!raw.trim()) return;
+    if (!raw.trim()) {
+        scheduleSpeechSync(0);
+        return;
+    }
 
     // НОВЕ: токени з урахуванням $...$/$$...$$ + збереження пробілів/переносів
     const tokens = tokenizeWithMarkdown(raw);
@@ -1682,6 +1934,7 @@ function generateCloze() {
     // Після генерації текстових/математичних пропусків — згенерувати "дірки" на зображеннях (якщо ввімкнено)
     autoOccludeAll();
     if (chkSpeedMode?.checked) startSpeedMode();
+    if (isSpeechModeEnabled()) scheduleSpeechSync(0);
 }
 
 // Перевірка відповідей
@@ -1715,7 +1968,8 @@ function checkAnswers(options = {}) {
     const {
         onlyInput = null,
         trackEnterChecks = false,
-        moveFocusForward = false
+        moveFocusForward = false,
+        forceMoveFocusForwardOnFailure = false
     } = options;
 
     if (speedState.running) stopSpeedMode(false);
@@ -1741,17 +1995,19 @@ function checkAnswers(options = {}) {
         if (!trackEnterChecks) {
             inp.classList.add('incorrect');
             inp.classList.remove('correct');
+            if (forceMoveFocusForwardOnFailure && nextInp) focusBlankInput(nextInp);
             return;
         }
 
         const revealed = handleFailedEnterAttempt(inp, id, val, updatedFormulas);
-        if (revealed && nextInp) focusBlankInput(nextInp);
+        if ((revealed || forceMoveFocusForwardOnFailure) && nextInp) focusBlankInput(nextInp);
     });
 
     rerenderUpdatedFormulas(updatedFormulas);
 
     if (chkAutoStop.checked) pauseTimer();
     updateResultLine(allInputs.length);
+    if (isSpeechModeEnabled()) scheduleSpeechSync(0);
 }
 
 document.getElementById('imgInput').addEventListener('change', (e) => {
@@ -1780,8 +2036,10 @@ chkSpeedMode?.addEventListener('change', () => {
     refreshSpeedPanel();
     if (!chkSpeedMode.checked) {
         stopSpeedMode();
+        if (isSpeechModeEnabled()) scheduleSpeechSync(0);
         return;
     }
+    stopSpeechRecognition('Голосовий режим вимкнений під час speed mode.', 'error');
     if (document.querySelector('input.blank')) startSpeedMode();
     else setSpeedStatus('Режим увімкнено. Натисніть "Створити пропуски".');
 });
@@ -1797,8 +2055,24 @@ timeoutLeniencyPercentInput?.addEventListener('change', normalizeTimeoutLeniency
 chkRetryRevealMode?.addEventListener('change', syncRetryRevealControls);
 retryRevealCountInput?.addEventListener('input', normalizeRetryRevealCount);
 retryRevealCountInput?.addEventListener('change', normalizeRetryRevealCount);
+chkSpeechMode?.addEventListener('change', () => {
+    if (!chkSpeechMode.checked) {
+        stopSpeechRecognition();
+        return;
+    }
+    if (!speechState.supported) {
+        chkSpeechMode.checked = false;
+        setSpeechStatus('Цей браузер не підтримує голосове введення.', 'error');
+        return;
+    }
+    scheduleSpeechSync(0);
+});
 syncTimeoutLeniencyControls();
 syncRetryRevealControls();
+if (!speechState.supported) {
+    if (chkSpeechMode) chkSpeechMode.disabled = true;
+    setSpeechStatus('Цей браузер не підтримує голосове введення.', 'error');
+}
 
 // Клавіатурні скорочення: Enter = перевірити, Ctrl+G = згенерувати
 document.addEventListener('keydown', (e) => {
@@ -1822,6 +2096,10 @@ document.addEventListener('keydown', (e) => {
         e.preventDefault();
         generateCloze();
     }
+});
+document.addEventListener('focusin', (e) => {
+    if (!isSpeechModeEnabled()) return;
+    if (e.target?.matches?.('input.blank')) scheduleSpeechSync(0);
 });
 
 // Додати завантажені зображення у галерею

@@ -478,6 +478,18 @@ button:disabled {
     display: none;
 }
 
+#speechPanel {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.7rem 1rem;
+    width: 100%;
+    padding: 0.7rem 0.8rem;
+    border: 1px solid rgba(0, 245, 255, 0.28);
+    border-radius: 0.75rem;
+    background: rgba(0, 245, 255, 0.08);
+}
+
 #speedMinutes {
     width: 90px;
 }
@@ -496,9 +508,35 @@ button:disabled {
     font-feature-settings: "tnum";
 }
 
+#speechStatus {
+    flex: 1 0 100%;
+    display: block;
+    min-height: 1.35em;
+    color: var(--muted);
+    font-weight: 600;
+}
+
+#speechStatus.ready {
+    color: var(--accent-2);
+}
+
+#speechStatus.listening {
+    color: var(--accent);
+    text-shadow: 0 0 10px rgba(0, 245, 255, 0.35);
+}
+
+#speechStatus.error {
+    color: var(--danger);
+}
+
 .blank.speed-active {
     border-color: var(--accent-2);
     box-shadow: 0 0 0 2px rgba(124, 255, 107, 0.22), 0 0 16px rgba(124, 255, 107, 0.32);
+}
+
+.blank.speech-active {
+    border-color: var(--accent);
+    box-shadow: 0 0 0 2px rgba(0, 245, 255, 0.22), 0 0 16px rgba(0, 245, 255, 0.32);
 }
 
 #mathInputs label {
