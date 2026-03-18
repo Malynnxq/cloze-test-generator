@@ -11,6 +11,7 @@ const speedStatus = document.getElementById('speedStatus');
 const chkSmartSpeedCalc = document.getElementById('smartSpeedCalc');
 const chkTimeoutLeniency = document.getElementById('timeoutLeniency');
 const timeoutLeniencyPercentInput = document.getElementById('timeoutLeniencyPercent');
+const chkIgnoreCase = document.getElementById('ignoreCase');
 const chkRetryRevealMode = document.getElementById('retryRevealMode');
 const retryRevealCountInput = document.getElementById('retryRevealCount');
 const chkSpeechMode = document.getElementById('speechMode');
@@ -530,6 +531,19 @@ function calcWordSimilarityPercent(typed, expected) {
     return Math.max(0, Math.min(100, similarity * 100));
 }
 
+function shouldIgnoreCaseForInput(inp) {
+    return !!chkIgnoreCase?.checked && !!inp && !inp.classList.contains('math-blank');
+}
+
+function normalizeAnswerForCompare(value, inp) {
+    const normalized = String(value ?? '').trim();
+    return shouldIgnoreCaseForInput(inp) ? normalized.toLowerCase() : normalized;
+}
+
+function isBlankAnswerCorrect(inp, typedValue, expectedValue) {
+    return normalizeAnswerForCompare(typedValue, inp) === normalizeAnswerForCompare(expectedValue, inp);
+}
+
 function shouldAcceptTimeoutAsCorrect(inp, typedValue, expectedValue) {
     if (!isTimeoutLeniencyEnabled()) return false;
     if (!inp || inp.classList.contains('math-blank')) return false;
@@ -810,7 +824,7 @@ function beginSpeedStep() {
             const val = (inp.value || '').trim();
             const expected = hidden[id];
             const updatedFormulas = new Set();
-            if (val === expected || shouldAcceptTimeoutAsCorrect(inp, val, expected)) {
+            if (isBlankAnswerCorrect(inp, val, expected) || shouldAcceptTimeoutAsCorrect(inp, val, expected)) {
                 fillBlankWithAnswer(inp, id, updatedFormulas);
             } else {
                 fillBlankWithWrongAttempt(inp, id, val, updatedFormulas);
@@ -844,7 +858,7 @@ function submitSpeedBlank() {
 
     const id = Number(inp.dataset.index);
     const val = (inp.value || '').trim();
-    if (val !== hidden[id]) {
+    if (!isBlankAnswerCorrect(inp, val, hidden[id])) {
         const updatedFormulas = new Set();
         const revealed = handleFailedEnterAttempt(inp, id, val, updatedFormulas);
         Promise.resolve(rerenderUpdatedFormulas(updatedFormulas)).finally(() => {
@@ -1955,7 +1969,7 @@ function legacyCheckAnswers() {
     inputs.forEach(inp => {
         const id = +inp.dataset.index;
         const val = (inp.value || '').trim();
-        if (val === hidden[id]) {
+        if (isBlankAnswerCorrect(inp, val, hidden[id])) {
             ok++;
             fillBlankWithAnswer(inp, id, updatedFormulas);
         } else {
@@ -1991,7 +2005,7 @@ function checkAnswers(options = {}) {
         if (!Number.isFinite(id) || excludedFromStats.has(id)) return;
 
         const val = (inp.value || '').trim();
-        if (val === hidden[id]) {
+        if (isBlankAnswerCorrect(inp, val, hidden[id])) {
             const nextInp = moveFocusForward ? findNextBlankInput(inp) : null;
             fillBlankWithAnswer(inp, id, updatedFormulas);
             if (nextInp) focusBlankInput(nextInp);

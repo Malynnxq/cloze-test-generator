@@ -70,10 +70,15 @@
             <label style="margin-left:1rem"><input type="checkbox" id="noHideMathCommands"> Не ховати команди в
                 математиці</label>
             <label style="margin-left:1rem"><input type="checkbox" id="ignorePunctuation"> Не перевіряти пунктуацію</label>
+            <label style="margin-left:1rem"><input type="checkbox" id="ignoreCase"> Не зважати на велику літеру</label>
             <label style="margin-left:1rem"><input type="checkbox" id="speedMode">&#1053;&#1072; &#1096;&#1074;&#1080;&#1076;&#1082;&#1110;&#1089;&#1090;&#1100;</label>
             <label style="margin-left:1rem"><input type="checkbox" id="retryRevealMode"> Режим N-спроб</label>
             <label style="margin-left:.4rem">N:
                 <input id="retryRevealCount" type="number" min="1" step="1" value="3" disabled>
+            </label>
+            <label style="margin-left:1rem"><input type="checkbox" id="timeoutLeniency"> Таймаут-залік (%)</label>
+            <label style="margin-left:.4rem">%:
+                <input id="timeoutLeniencyPercent" type="number" min="1" max="100" step="1" value="70" disabled>
             </label>
         </div>
         <div id="speedPanel" hidden>
@@ -81,10 +86,6 @@
                 <input id="speedMinutes" type="number" min="1" step="1" value="5">
             </label>
             <label><input type="checkbox" id="smartSpeedCalc" checked> Розумний прорахунок</label>
-            <label><input type="checkbox" id="timeoutLeniency"> Таймаут-залік (%)</label>
-            <label>%:
-                <input id="timeoutLeniencyPercent" type="number" min="1" max="100" step="1" value="70" disabled>
-            </label>
             <span id="speedStatus" aria-live="polite"></span>
         </div>
         <div id="speechPanel">
