@@ -266,6 +266,9 @@ function getSpeechRecognition() {
 
         if (speechState.stopRequested) {
             speechState.stopRequested = false;
+            if (speechState.shouldListen && isSpeechModeEnabled()) {
+                scheduleSpeechSync(0);
+            }
             return;
         }
 
