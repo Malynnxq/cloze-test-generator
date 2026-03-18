@@ -9,6 +9,7 @@ const speedPanel = document.getElementById('speedPanel');
 const speedMinutesInput = document.getElementById('speedMinutes');
 const speedStatus = document.getElementById('speedStatus');
 const chkSmartSpeedCalc = document.getElementById('smartSpeedCalc');
+const chkLenientAnyCheck = document.getElementById('lenientAnyCheck');
 const chkTimeoutLeniency = document.getElementById('timeoutLeniency');
 const timeoutLeniencyPercentInput = document.getElementById('timeoutLeniencyPercent');
 const chkIgnoreCase = document.getElementById('ignoreCase');
@@ -504,9 +505,13 @@ function isTimeoutLeniencyEnabled() {
     return !!chkTimeoutLeniency?.checked;
 }
 
+function isLenientAnyCheckEnabled() {
+    return !!chkLenientAnyCheck?.checked;
+}
+
 function syncTimeoutLeniencyControls() {
     if (!timeoutLeniencyPercentInput) return;
-    timeoutLeniencyPercentInput.disabled = !isTimeoutLeniencyEnabled();
+    timeoutLeniencyPercentInput.disabled = !isTimeoutLeniencyEnabled() && !isLenientAnyCheckEnabled();
     normalizeTimeoutLeniencyPercent();
 }
 
@@ -558,11 +563,19 @@ function isBlankAnswerCorrect(inp, typedValue, expectedValue) {
     return normalizeAnswerForCompare(typedValue, inp) === normalizeAnswerForCompare(expectedValue, inp);
 }
 
-function shouldAcceptTimeoutAsCorrect(inp, typedValue, expectedValue) {
-    if (!isTimeoutLeniencyEnabled()) return false;
+function isLenientMatch(inp, typedValue, expectedValue) {
     if (!inp || inp.classList.contains('math-blank')) return false;
     const threshold = normalizeTimeoutLeniencyPercent();
     return calcWordSimilarityPercent(typedValue, expectedValue) >= threshold;
+}
+
+function shouldAcceptLenientAnswer(inp, typedValue, expectedValue, mode = 'general') {
+    if (mode === 'timeout') {
+        if (!isTimeoutLeniencyEnabled() && !isLenientAnyCheckEnabled()) return false;
+        return isLenientMatch(inp, typedValue, expectedValue);
+    }
+    if (!isLenientAnyCheckEnabled()) return false;
+    return isLenientMatch(inp, typedValue, expectedValue);
 }
 
 function clearSpeedTick() {
@@ -838,7 +851,7 @@ function beginSpeedStep() {
             const val = (inp.value || '').trim();
             const expected = hidden[id];
             const updatedFormulas = new Set();
-            if (isBlankAnswerCorrect(inp, val, expected) || shouldAcceptTimeoutAsCorrect(inp, val, expected)) {
+            if (isBlankAnswerCorrect(inp, val, expected) || shouldAcceptLenientAnswer(inp, val, expected, 'timeout')) {
                 fillBlankWithAnswer(inp, id, updatedFormulas);
             } else {
                 fillBlankWithWrongAttempt(inp, id, val, updatedFormulas);
@@ -872,7 +885,7 @@ function submitSpeedBlank() {
 
     const id = Number(inp.dataset.index);
     const val = (inp.value || '').trim();
-    if (!isBlankAnswerCorrect(inp, val, hidden[id])) {
+    if (!isBlankAnswerCorrect(inp, val, hidden[id]) && !shouldAcceptLenientAnswer(inp, val, hidden[id], 'general')) {
         const updatedFormulas = new Set();
         const revealed = handleFailedEnterAttempt(inp, id, val, updatedFormulas);
         Promise.resolve(rerenderUpdatedFormulas(updatedFormulas)).finally(() => {
@@ -1983,7 +1996,7 @@ function legacyCheckAnswers() {
     inputs.forEach(inp => {
         const id = +inp.dataset.index;
         const val = (inp.value || '').trim();
-        if (isBlankAnswerCorrect(inp, val, hidden[id])) {
+        if (isBlankAnswerCorrect(inp, val, hidden[id]) || shouldAcceptLenientAnswer(inp, val, hidden[id], 'general')) {
             ok++;
             fillBlankWithAnswer(inp, id, updatedFormulas);
         } else {
@@ -2019,7 +2032,7 @@ function checkAnswers(options = {}) {
         if (!Number.isFinite(id) || excludedFromStats.has(id)) return;
 
         const val = (inp.value || '').trim();
-        if (isBlankAnswerCorrect(inp, val, hidden[id])) {
+        if (isBlankAnswerCorrect(inp, val, hidden[id]) || shouldAcceptLenientAnswer(inp, val, hidden[id], 'general')) {
             const nextInp = moveFocusForward ? findNextBlankInput(inp) : null;
             fillBlankWithAnswer(inp, id, updatedFormulas);
             if (nextInp) focusBlankInput(nextInp);
@@ -2084,6 +2097,7 @@ speedMinutesInput?.addEventListener('change', () => {
 chkSmartSpeedCalc?.addEventListener('change', () => {
     if (speedState.running) startSpeedMode();
 });
+chkLenientAnyCheck?.addEventListener('change', syncTimeoutLeniencyControls);
 chkTimeoutLeniency?.addEventListener('change', syncTimeoutLeniencyControls);
 timeoutLeniencyPercentInput?.addEventListener('input', normalizeTimeoutLeniencyPercent);
 timeoutLeniencyPercentInput?.addEventListener('change', normalizeTimeoutLeniencyPercent);
