@@ -233,6 +233,17 @@ function getSpeechRecognition() {
             moveFocusForward: true,
             forceMoveFocusForwardOnFailure: true
         });
+
+        if (speechState.listening) {
+            speechState.stopRequested = true;
+            try {
+                recognition.stop();
+            } catch (_) {
+                try {
+                    recognition.abort();
+                } catch (_) { }
+            }
+        }
     };
 
     recognition.onerror = (event) => {
