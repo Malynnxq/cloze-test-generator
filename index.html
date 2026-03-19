@@ -44,7 +44,7 @@
         <input type="file" id="imgInput" accept="image/*" multiple>
         <label><input type="checkbox" id="imgAuto" checked> Авто-оклюзія (випадкові ділянки)</label>
         <!-- існуючий тумблер логів -->
-        <label style="margin-left:1rem"><input type="checkbox" id="debugLog"> Показувати логи</label>
+        <label style="margin-left:1rem"><input type="checkbox" id="debugLog" checked> Показувати логи</label>
         <!-- НОВЕ: окремий відсоток складності для зображень -->
         <label style="margin-left:1rem">Складність зображень (%):
             <input id="imgPercent" type="number" value="20" min="0" max="100" step="5">
@@ -66,20 +66,21 @@
         <button id="btnCheck">Перевірити</button>
         <!-- додано: математика -->
         <div style="margin-top:.5rem">
-            <label><input type="checkbox" id="processMath"> Перевіряти математичну нотацію</label>
-            <label style="margin-left:1rem"><input type="checkbox" id="noHideMathCommands"> Не ховати команди в
+            <label><input type="checkbox" id="processMath" checked> Перевіряти математичну нотацію</label>
+            <label style="margin-left:1rem"><input type="checkbox" id="noHideMathCommands" checked> Не ховати команди в
                 математиці</label>
-            <label style="margin-left:1rem"><input type="checkbox" id="ignorePunctuation"> Не перевіряти пунктуацію</label>
-            <label style="margin-left:1rem"><input type="checkbox" id="ignoreCase"> Не зважати на велику літеру</label>
-            <label style="margin-left:1rem"><input type="checkbox" id="speedMode">&#1053;&#1072; &#1096;&#1074;&#1080;&#1076;&#1082;&#1110;&#1089;&#1090;&#1100;</label>
-            <label style="margin-left:1rem"><input type="checkbox" id="retryRevealMode"> Режим N-спроб</label>
+            <label style="margin-left:1rem"><input type="checkbox" id="ignorePunctuation" checked> Не перевіряти пунктуацію</label>
+            <label style="margin-left:1rem"><input type="checkbox" id="ignoreCase" checked> Не зважати на велику літеру</label>
+            <label style="margin-left:1rem"><input type="checkbox" id="ignoreMathCase" checked> Не зважати на велику літеру в математиці</label>
+            <label style="margin-left:1rem"><input type="checkbox" id="speedMode" checked>&#1053;&#1072; &#1096;&#1074;&#1080;&#1076;&#1082;&#1110;&#1089;&#1090;&#1100;</label>
+            <label style="margin-left:1rem"><input type="checkbox" id="retryRevealMode" checked> Режим N-спроб</label>
             <label style="margin-left:.4rem">N:
-                <input id="retryRevealCount" type="number" min="1" step="1" value="3" disabled>
+                <input id="retryRevealCount" type="number" min="1" step="1" value="2" disabled>
             </label>
-            <label style="margin-left:1rem"><input type="checkbox" id="lenientAnyCheck"> Частково правильно при будь-якій перевірці (%)</label>
-            <label style="margin-left:1rem"><input type="checkbox" id="timeoutLeniency"> Частково правильно тільки при таймауті (%)</label>
+            <label style="margin-left:1rem"><input type="checkbox" id="lenientAnyCheck" checked> Частково правильно при будь-якій перевірці (%)</label>
+            <label style="margin-left:1rem"><input type="checkbox" id="timeoutLeniency" checked> Частково правильно тільки при таймауті (%)</label>
             <label style="margin-left:.4rem">%:
-                <input id="timeoutLeniencyPercent" type="number" min="1" max="100" step="1" value="70" disabled>
+                <input id="timeoutLeniencyPercent" type="number" min="1" max="100" step="1" value="30" disabled>
             </label>
         </div>
         <div id="speedPanel" hidden>
@@ -90,7 +91,7 @@
             <span id="speedStatus" aria-live="polite"></span>
         </div>
         <div id="speechPanel">
-            <label><input type="checkbox" id="speechMode"> Р—Р°РїРѕРІРЅСЋРІР°С‚Рё РіРѕР»РѕСЃРѕРј</label>
+            <label><input type="checkbox" id="speechMode" checked> Р—Р°РїРѕРІРЅСЋРІР°С‚Рё РіРѕР»РѕСЃРѕРј</label>
             <label for="speechLang">Мова:
                 <select id="speechLang">
                     <option value="auto">Авто</option>

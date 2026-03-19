@@ -13,6 +13,7 @@ const chkLenientAnyCheck = document.getElementById('lenientAnyCheck');
 const chkTimeoutLeniency = document.getElementById('timeoutLeniency');
 const timeoutLeniencyPercentInput = document.getElementById('timeoutLeniencyPercent');
 const chkIgnoreCase = document.getElementById('ignoreCase');
+const chkIgnoreMathCase = document.getElementById('ignoreMathCase');
 const chkRetryRevealMode = document.getElementById('retryRevealMode');
 const retryRevealCountInput = document.getElementById('retryRevealCount');
 const chkSpeechMode = document.getElementById('speechMode');
@@ -670,7 +671,9 @@ function calcWordSimilarityPercent(typed, expected) {
 }
 
 function shouldIgnoreCaseForInput(inp) {
-    return !!chkIgnoreCase?.checked && !!inp && !inp.classList.contains('math-blank');
+    if (!inp) return false;
+    if (inp.classList.contains('math-blank')) return !!chkIgnoreMathCase?.checked;
+    return !!chkIgnoreCase?.checked;
 }
 
 function normalizeAnswerForCompare(value, inp) {
