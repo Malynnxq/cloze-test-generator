@@ -363,10 +363,10 @@ function getSpeechRecognition() {
         if (speechState.listening) {
             speechState.stopRequested = true;
             try {
-                recognition.stop();
+                recognition.abort();
             } catch (_) {
                 try {
-                    recognition.abort();
+                    recognition.stop();
                 } catch (_) { }
             }
         }
@@ -410,7 +410,7 @@ function getSpeechRecognition() {
         }
 
         if (speechState.shouldListen && isSpeechModeEnabled()) {
-            scheduleSpeechSync(140);
+            scheduleSpeechSync(0);
         }
     };
 
