@@ -526,15 +526,20 @@ function collectReadWordsByBlankId(root) {
     return readWordsById;
 }
 
+function scaleAnswerLengthUnits(length) {
+    const safeLength = Math.max(1, Number(length) || 1);
+    return Math.max(1, 2.1 + Math.pow(safeLength, 0.38) * 1.55);
+}
+
 function computeAnswerUnits(answer) {
     const raw = String(answer ?? '').trim();
     if (!raw) return 1;
     const compact = raw.replace(/\s+/g, '');
     if (!compact) return 1;
     if (/^\\[A-Za-z]+$/.test(compact)) {
-        return Math.max(2, Math.ceil((compact.length - 1) / 2));
+        return scaleAnswerLengthUnits(Math.max(2, Math.ceil((compact.length - 1) / 2)));
     }
-    return Math.max(1, Array.from(compact).length);
+    return scaleAnswerLengthUnits(Array.from(compact).length);
 }
 
 function computeMathReadUnits(id) {
